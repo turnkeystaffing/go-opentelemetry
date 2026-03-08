@@ -47,6 +47,12 @@ type ComponentsConfig struct {
 
 	// Database contains database-specific observability configuration
 	Database DatabaseConfig
+
+	// Redis contains Redis-specific observability configuration
+	Redis RedisConfig
+
+	// S3 contains S3-specific observability configuration
+	S3 S3Config
 }
 
 // DatabaseConfig controls database observability features
@@ -56,6 +62,21 @@ type DatabaseConfig struct {
 
 	// Metrics enables/disables database metrics collection (connection stats, query metrics)
 	Metrics *bool
+}
+
+// RedisConfig controls Redis observability features
+type RedisConfig struct {
+	// Tracing enables/disables Redis operation tracing via redisotel
+	Tracing *bool
+
+	// Metrics enables/disables Redis metrics collection via redisotel
+	Metrics *bool
+}
+
+// S3Config controls S3 observability features
+type S3Config struct {
+	// Tracing enables/disables S3 operation tracing
+	Tracing *bool
 }
 
 // SamplerConfig contains OpenTelemetry sampling configuration
@@ -123,4 +144,37 @@ func (cfg *Config) IsDatabaseMetricsEnabled() bool {
 		return true // Default to enabled when metrics are enabled
 	}
 	return *cfg.Components.Database.Metrics
+}
+
+// IsRedisTracingEnabled returns true if Redis tracing is enabled
+func (cfg *Config) IsRedisTracingEnabled() bool {
+	if !cfg.IsTracingEnabled() {
+		return false
+	}
+	if cfg.Components.Redis.Tracing == nil {
+		return true // Default to enabled when tracing is enabled
+	}
+	return *cfg.Components.Redis.Tracing
+}
+
+// IsRedisMetricsEnabled returns true if Redis metrics are enabled
+func (cfg *Config) IsRedisMetricsEnabled() bool {
+	if !cfg.IsMetricsEnabled() {
+		return false
+	}
+	if cfg.Components.Redis.Metrics == nil {
+		return true // Default to enabled when metrics are enabled
+	}
+	return *cfg.Components.Redis.Metrics
+}
+
+// IsS3TracingEnabled returns true if S3 tracing is enabled
+func (cfg *Config) IsS3TracingEnabled() bool {
+	if !cfg.IsTracingEnabled() {
+		return false
+	}
+	if cfg.Components.S3.Tracing == nil {
+		return true // Default to enabled when tracing is enabled
+	}
+	return *cfg.Components.S3.Tracing
 }
