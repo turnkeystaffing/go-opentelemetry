@@ -3,18 +3,23 @@ package opentelemetry
 import (
 	"context"
 	"fmt"
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"strings"
 	"time"
 
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -83,6 +88,7 @@ func validateConfig(cfg Config) error {
 type Provider struct {
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
+	LoggerProvider *sdklog.LoggerProvider
 	Propagator     propagation.TextMapPropagator
 	Tracer         trace.Tracer
 	Meter          metric.Meter
@@ -166,7 +172,17 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		meter = otel.Meter("noop")
 	}
 
-	// Log provider initialization will be added when OTLP logs are available in the OTel version
+	// Initialize log provider conditionally
+	var loggerProvider *sdklog.LoggerProvider
+	if cfg.IsLogsEnabled() {
+		lp, logShutdown, err := initLogProvider(ctx, cfg, res)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize log provider: %w", err)
+		}
+		loggerProvider = lp
+		shutdownFuncs = append(shutdownFuncs, logShutdown)
+		global.SetLoggerProvider(loggerProvider)
+	}
 
 	// Set up propagator for distributed tracing
 	propagator := propagation.NewCompositeTextMapPropagator(
@@ -178,6 +194,7 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	return &Provider{
 		TracerProvider: tracerProvider,
 		MeterProvider:  meterProvider,
+		LoggerProvider: loggerProvider,
 		Propagator:     propagator,
 		Tracer:         tracer,
 		Meter:          meter,
@@ -359,4 +376,45 @@ func createSampler(cfg Config) (sdktrace.Sampler, error) {
 	}
 }
 
-// Log provider functionality will be added when OTLP logs become available in the OTel SDK version
+// initLogProvider initializes the log provider with appropriate exporter based on protocol
+func initLogProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdklog.LoggerProvider, func(context.Context) error, error) {
+	logExporter, err := createLogExporter(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create log exporter: %w", err)
+	}
+
+	loggerProvider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
+		sdklog.WithResource(res),
+	)
+
+	return loggerProvider, loggerProvider.Shutdown, nil
+}
+
+// createLogExporter creates the appropriate log exporter based on protocol configuration
+func createLogExporter(ctx context.Context, cfg Config) (sdklog.Exporter, error) {
+	switch cfg.Protocol {
+	case ProtocolOTLPgRPC:
+		opts := []otlploggrpc.Option{
+			otlploggrpc.WithEndpoint(cfg.Endpoint),
+		}
+		if cfg.Insecure {
+			opts = append(opts, otlploggrpc.WithInsecure())
+		}
+		return otlploggrpc.New(ctx, opts...)
+
+	case ProtocolOTLPHTTP:
+		logsPath := GetSignalPath(ProtocolOTLPHTTP, "logs")
+		opts := []otlploghttp.Option{
+			otlploghttp.WithEndpoint(cfg.Endpoint),
+			otlploghttp.WithURLPath(logsPath),
+		}
+		if cfg.Insecure {
+			opts = append(opts, otlploghttp.WithInsecure())
+		}
+		return otlploghttp.New(ctx, opts...)
+
+	default:
+		return nil, fmt.Errorf("unsupported protocol for logs: %s", cfg.Protocol)
+	}
+}
