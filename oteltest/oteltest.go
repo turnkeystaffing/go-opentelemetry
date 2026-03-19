@@ -84,6 +84,27 @@ func AssertHistogramRecorded(t *testing.T, rm metricdata.ResourceMetrics, metric
 	t.Errorf("histogram %q not found in collected metrics", metricName)
 }
 
+// AssertHistogramInt64Recorded asserts that an Int64 histogram metric with the given name has at least one data point.
+func AssertHistogramInt64Recorded(t *testing.T, rm metricdata.ResourceMetrics, metricName string) {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == metricName {
+				if hd, ok := m.Data.(metricdata.Histogram[int64]); ok {
+					for _, dp := range hd.DataPoints {
+						if dp.Count > 0 {
+							return
+						}
+					}
+				}
+				t.Errorf("histogram %q found but has no data points", metricName)
+				return
+			}
+		}
+	}
+	t.Errorf("histogram %q not found in collected metrics", metricName)
+}
+
 // AssertCounterValue asserts that an Int64 counter metric with the given name has the expected value.
 func AssertCounterValue(t *testing.T, rm metricdata.ResourceMetrics, metricName string, expected int64) {
 	t.Helper()
