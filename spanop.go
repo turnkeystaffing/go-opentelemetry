@@ -96,6 +96,19 @@ func NewFloat64Histogram(meter metric.Meter, name string, description string, un
 	return h
 }
 
+// NewInt64Histogram creates an Int64Histogram with the given parameters.
+// Logs errors instead of panicking to allow graceful degradation.
+func NewInt64Histogram(meter metric.Meter, name string, description string, unit string, logger *slog.Logger) metric.Int64Histogram {
+	h, err := meter.Int64Histogram(name,
+		metric.WithDescription(description),
+		metric.WithUnit(unit),
+	)
+	if err != nil {
+		logger.Error("failed to create histogram", "name", name, "error", err)
+	}
+	return h
+}
+
 // NewInt64Counter creates an Int64Counter with the given parameters.
 // Logs errors instead of panicking to allow graceful degradation.
 func NewInt64Counter(meter metric.Meter, name string, description string, logger *slog.Logger) metric.Int64Counter {
