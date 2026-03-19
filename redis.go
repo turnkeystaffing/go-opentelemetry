@@ -1,8 +1,8 @@
 package opentelemetry
 
 import (
-	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/extra/redisotel/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 // InstrumentRedisTracing adds OTel tracing hooks to a go-redis client.
