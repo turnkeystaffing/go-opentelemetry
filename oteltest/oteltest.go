@@ -83,3 +83,27 @@ func AssertHistogramRecorded(t *testing.T, rm metricdata.ResourceMetrics, metric
 	}
 	t.Errorf("histogram %q not found in collected metrics", metricName)
 }
+
+// AssertCounterValue asserts that an Int64 counter metric with the given name has the expected value.
+func AssertCounterValue(t *testing.T, rm metricdata.ResourceMetrics, metricName string, expected int64) {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == metricName {
+				if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
+					var total int64
+					for _, dp := range sum.DataPoints {
+						total += dp.Value
+					}
+					if total != expected {
+						t.Errorf("counter %q: got value %d, want %d", metricName, total, expected)
+					}
+					return
+				}
+				t.Errorf("counter %q found but is not an Int64 Sum", metricName)
+				return
+			}
+		}
+	}
+	t.Errorf("counter %q not found in collected metrics", metricName)
+}
