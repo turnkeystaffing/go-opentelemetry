@@ -59,6 +59,11 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 
 			// Add trace ID to response headers for debugging/correlation
 			ctx.Response.Header.Set("X-Trace-ID", span.SpanContext().TraceID().String())
+			// W3C traceresponse header for end-to-end trace correlation
+			ctx.Response.Header.Set("traceresponse", fmt.Sprintf("00-%s-%s-%s",
+				span.SpanContext().TraceID().String(),
+				span.SpanContext().SpanID().String(),
+				span.SpanContext().TraceFlags().String()))
 
 			// Call the next handler
 			next(ctx)
@@ -168,13 +173,6 @@ func (c *MapCarrier) Keys() []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-// StartSpan creates a new span from the given context
-// This is a convenience function for creating spans in handlers and processors
-func StartSpan(ctx context.Context, operationName string, attributes ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := otel.Tracer("get-native-auth")
-	return tracer.Start(ctx, operationName, trace.WithAttributes(attributes...))
 }
 
 // AddCustomAttributes adds custom attributes to the current span if one exists

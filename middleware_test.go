@@ -3,6 +3,7 @@ package opentelemetry
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/valyala/fasthttp"
@@ -52,6 +53,24 @@ func TestFastHTTPMiddleware(t *testing.T) {
 	traceIDHeader := string(ctx.Response.Header.Peek("X-Trace-ID"))
 	if traceIDHeader == "" {
 		t.Error("Expected X-Trace-ID header to be set")
+	}
+
+	// Verify traceresponse header (W3C format: {version}-{traceID}-{spanID}-{flags})
+	traceresponse := string(ctx.Response.Header.Peek("traceresponse"))
+	if traceresponse == "" {
+		t.Error("Expected traceresponse header to be set")
+	} else {
+		parts := strings.Split(traceresponse, "-")
+		if len(parts) != 4 {
+			t.Errorf("traceresponse should have 4 parts, got %d: %s", len(parts), traceresponse)
+		} else {
+			if parts[0] != "00" {
+				t.Errorf("traceresponse version should be '00', got %q", parts[0])
+			}
+			if parts[1] != traceIDHeader {
+				t.Errorf("traceresponse traceID %q should match X-Trace-ID %q", parts[1], traceIDHeader)
+			}
+		}
 	}
 
 	// Verify trace context was stored
@@ -241,58 +260,6 @@ func TestMapCarrier(t *testing.T) {
 	keys := carrier.Keys()
 	if len(keys) != 3 { // traceparent, baggage, tracestate
 		t.Errorf("Expected 3 keys, got %d", len(keys))
-	}
-}
-
-func TestStartSpan(t *testing.T) {
-	// Set up tracer provider
-	spanRecorder := tracetest.NewSpanRecorder()
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(spanRecorder),
-	)
-	otel.SetTracerProvider(tracerProvider)
-
-	// Test span creation
-	ctx := context.Background()
-	newCtx, span := StartSpan(ctx, "test-operation",
-		attribute.String("test.key", "test.value"),
-		attribute.Int("test.number", 42),
-	)
-
-	if span == nil {
-		t.Fatal("Expected span to be created")
-	}
-
-	if newCtx == ctx {
-		t.Error("Expected new context to be different from original")
-	}
-
-	span.End()
-
-	// Verify span was recorded
-	spans := spanRecorder.Ended()
-	if len(spans) != 1 {
-		t.Fatalf("Expected 1 span, got %d", len(spans))
-	}
-
-	recordedSpan := spans[0]
-	if recordedSpan.Name() != "test-operation" {
-		t.Errorf("Expected span name 'test-operation', got '%s'", recordedSpan.Name())
-	}
-
-	// Verify attributes
-	attrs := recordedSpan.Attributes()
-	attrMap := make(map[string]interface{})
-	for _, attr := range attrs {
-		attrMap[string(attr.Key)] = attr.Value.AsInterface()
-	}
-
-	if attrMap["test.key"] != "test.value" {
-		t.Errorf("Expected test.key='test.value', got %v", attrMap["test.key"])
-	}
-
-	if attrMap["test.number"] != int64(42) {
-		t.Errorf("Expected test.number=42, got %v", attrMap["test.number"])
 	}
 }
 

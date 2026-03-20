@@ -92,6 +92,7 @@ type Provider struct {
 	Propagator     propagation.TextMapPropagator
 	Tracer         trace.Tracer
 	Meter          metric.Meter
+	ServiceName    string
 	shutdownFuncs  []func(context.Context) error
 }
 
@@ -146,7 +147,7 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		tracerProvider = tp
 		shutdownFuncs = append(shutdownFuncs, traceShutdown)
 		otel.SetTracerProvider(tracerProvider)
-		tracer = tracerProvider.Tracer("get-native-auth", trace.WithInstrumentationVersion("1.0.0"))
+		tracer = tracerProvider.Tracer(cfg.ServiceName)
 	} else {
 		tracerProvider = sdktrace.NewTracerProvider()
 		tracer = otel.Tracer("noop")
@@ -166,7 +167,7 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 			shutdownFuncs = append(shutdownFuncs, metricShutdown)
 			otel.SetMeterProvider(meterProvider)
 		}
-		meter = meterProvider.Meter("get-native-auth", metric.WithInstrumentationVersion("1.0.0"))
+		meter = meterProvider.Meter(cfg.ServiceName)
 	} else {
 		meterProvider = sdkmetric.NewMeterProvider()
 		meter = otel.Meter("noop")
@@ -198,6 +199,7 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		Propagator:     propagator,
 		Tracer:         tracer,
 		Meter:          meter,
+		ServiceName:    cfg.ServiceName,
 		shutdownFuncs:  shutdownFuncs,
 	}, nil
 }
