@@ -58,12 +58,15 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			}
 
 			// Add trace ID to response headers for debugging/correlation
-			ctx.Response.Header.Set("X-Trace-ID", span.SpanContext().TraceID().String())
-			// W3C traceresponse header for end-to-end trace correlation
-			ctx.Response.Header.Set("traceresponse", fmt.Sprintf("00-%s-%s-%s",
-				span.SpanContext().TraceID().String(),
-				span.SpanContext().SpanID().String(),
-				span.SpanContext().TraceFlags().String()))
+			// Only set when span has valid trace context (avoids zero-value headers with noop provider)
+			if span.SpanContext().IsValid() {
+				ctx.Response.Header.Set("X-Trace-ID", span.SpanContext().TraceID().String())
+				// W3C traceresponse header for end-to-end trace correlation
+				ctx.Response.Header.Set("traceresponse", fmt.Sprintf("00-%s-%s-%s",
+					span.SpanContext().TraceID().String(),
+					span.SpanContext().SpanID().String(),
+					span.SpanContext().TraceFlags().String()))
+			}
 
 			// Call the next handler
 			next(ctx)
