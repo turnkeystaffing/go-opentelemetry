@@ -4,26 +4,15 @@ import (
 	"net/http"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel"
 )
 
-// NewInstrumentedHTTPClient creates an HTTP client with OpenTelemetry instrumentation if available
+// NewInstrumentedHTTPClient creates an HTTP client with OpenTelemetry instrumentation.
+// Spans go to the global tracer provider; before InitializeProvider runs they are no-ops.
 // This client automatically injects standard W3C traceparent headers for external service communication
 // (NOT the internal x-trace-* headers used for database storage)
 func NewInstrumentedHTTPClient(baseClient *http.Client) *http.Client {
 	if baseClient == nil {
 		baseClient = http.DefaultClient
-	}
-
-	// Check if OpenTelemetry is available (provider was initialized)
-	if otel.GetTracerProvider() == nil {
-		// No OpenTelemetry, return regular client
-		return &http.Client{
-			Transport:     baseClient.Transport,
-			CheckRedirect: baseClient.CheckRedirect,
-			Jar:           baseClient.Jar,
-			Timeout:       baseClient.Timeout,
-		}
 	}
 
 	// Create instrumented client with automatic W3C traceparent header injection
@@ -35,21 +24,10 @@ func NewInstrumentedHTTPClient(baseClient *http.Client) *http.Client {
 	}
 }
 
-// NewInstrumentedHTTPClientWithOptions creates an HTTP client with OpenTelemetry instrumentation and custom options if available
+// NewInstrumentedHTTPClientWithOptions creates an HTTP client with OpenTelemetry instrumentation and custom options.
 func NewInstrumentedHTTPClientWithOptions(baseClient *http.Client, opts ...otelhttp.Option) *http.Client {
 	if baseClient == nil {
 		baseClient = http.DefaultClient
-	}
-
-	// Check if OpenTelemetry is available (provider was initialized)
-	if otel.GetTracerProvider() == nil {
-		// No OpenTelemetry, return regular client
-		return &http.Client{
-			Transport:     baseClient.Transport,
-			CheckRedirect: baseClient.CheckRedirect,
-			Jar:           baseClient.Jar,
-			Timeout:       baseClient.Timeout,
-		}
 	}
 
 	// Create instrumented client
