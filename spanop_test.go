@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"os"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -380,5 +382,46 @@ func TestSpanOp_NoOptions(t *testing.T) {
 	}
 	if spans[0].Name() != "test.bare" {
 		t.Errorf("expected span name 'test.bare', got %q", spans[0].Name())
+	}
+}
+
+// AC-8: sub-millisecond operations must be recorded with fractional ms, not
+// truncated to whole milliseconds (which reports fast operations as 0).
+func TestSpanOp_DurationHistogram_KeepsSubMillisecondPrecision(t *testing.T) {
+	tracer := sdktrace.NewTracerProvider().Tracer("test")
+	reader := sdkmetric.NewManualReader()
+	meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+	h := NewFloat64Histogram(meter, "op.duration", "op duration", "ms", testLogger())
+
+	_, err := SpanOp[struct{}](context.Background(), tracer, "fast.op",
+		func(ctx context.Context, span trace.Span) (struct{}, error) {
+			time.Sleep(400 * time.Microsecond)
+			return struct{}{}, nil
+		},
+		WithDurationHistogram(h),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	var sum float64
+	var found bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if hist, ok := m.Data.(metricdata.Histogram[float64]); ok && m.Name == "op.duration" {
+				found = true
+				sum = hist.DataPoints[0].Sum
+			}
+		}
+	}
+	if !found {
+		t.Fatal("op.duration not recorded")
+	}
+	if sum < 0.4 || sum == math.Trunc(sum) {
+		t.Errorf("recorded %v ms; want a fractional value >= 0.4", sum)
 	}
 }
