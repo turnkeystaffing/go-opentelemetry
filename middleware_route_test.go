@@ -71,3 +71,43 @@ func TestFastHTTPMiddleware_RouteFromFastHTTPRouterNamesSpan(t *testing.T) {
 		t.Errorf("http.route = %v (set=%v), want /orders/{orderID}/items", v.AsString(), ok)
 	}
 }
+
+// AC-2: without a route template, ID-like path segments are replaced with {id}
+// in the span name only; http.route stays unset because it is not a real template.
+func TestFastHTTPMiddleware_NoRoute_TemplatesIDSegmentsInSpanName(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{"numeric id", "/users/123", "GET /users/{id}"},
+		{"uuid", "/orders/3f2b8c1e-9a4d-4e2b-8c3a-1f2e3d4c5b6a/items", "GET /orders/{id}/items"},
+		{"uppercase uuid", "/orders/3F2B8C1E-9A4D-4E2B-8C3A-1F2E3D4C5B6A", "GET /orders/{id}"},
+		{"16+ hex chars", "/blobs/deadbeefcafebabe0123", "GET /blobs/{id}"},
+		{"several ids", "/users/7/posts/99", "GET /users/{id}/posts/{id}"},
+		{"slug kept", "/users/john-smith", "GET /users/john-smith"},
+		{"short hex word kept", "/api/v1/facade", "GET /api/v1/facade"},
+		{"15 hex chars kept", "/blobs/deadbeefcafebab", "GET /blobs/deadbeefcafebab"},
+		{"query ignored", "/users/123?token=x", "GET /users/{id}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			span := serveThroughMiddleware(t, "GET", tt.uri, func(ctx *fasthttp.RequestCtx) {})
+			if span.Name() != tt.want {
+				t.Errorf("span name = %q, want %q", span.Name(), tt.want)
+			}
+			if v, ok := spanAttr(span, "http.route"); ok {
+				t.Errorf("http.route must not be set without a route template, got %q", v.AsString())
+			}
+		})
+	}
+}
+
+// AC-3: when the request target is not a path that can be templated (e.g. the
+// "OPTIONS *" server-wide form), the span is named after the method only.
+func TestFastHTTPMiddleware_NoTemplatablePath_SpanNameIsMethod(t *testing.T) {
+	span := serveThroughMiddleware(t, "OPTIONS", "*", func(ctx *fasthttp.RequestCtx) {})
+	if span.Name() != "OPTIONS" {
+		t.Errorf("span name = %q, want %q", span.Name(), "OPTIONS")
+	}
+}

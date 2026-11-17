@@ -24,8 +24,13 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Extract trace context from incoming headers
 			reqCtx := propagator.Extract(context.Background(), &FastHTTPHeaderCarrier{ctx})
 
-			// Create span for the HTTP request
-			spanName := fmt.Sprintf("%s %s", string(ctx.Method()), string(ctx.Path()))
+			// Create span for the HTTP request. The name never contains the raw
+			// path: it is "{method} {template}" with ID-like segments replaced,
+			// and is refined to the route template after routing (see below).
+			spanName := string(ctx.Method())
+			if tmpl := templatePath(ctx); tmpl != "" {
+				spanName += " " + tmpl
+			}
 			reqCtx, span := tracer.Start(reqCtx, spanName,
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(
@@ -133,6 +138,65 @@ func routeFromCtx(ctx *fasthttp.RequestCtx) string {
 		}
 	})
 	return route
+}
+
+// templatePath derives a low-cardinality span-name target from the request path
+// when no route template is known: path segments that are all digits, a UUID or
+// 16+ hex characters become "{id}"; other segments are kept. It returns "" when
+// the request target is not a path (e.g. "OPTIONS *").
+func templatePath(ctx *fasthttp.RequestCtx) string {
+	if string(ctx.Request.Header.RequestURI()) == "*" {
+		return ""
+	}
+	path := string(ctx.Path())
+	if !strings.HasPrefix(path, "/") {
+		return ""
+	}
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if isIDSegment(seg) {
+			segments[i] = "{id}"
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+// isIDSegment reports whether a path segment looks like an identifier.
+func isIDSegment(seg string) bool {
+	if seg == "" {
+		return false
+	}
+	if isAllDigits(seg) || isUUID(seg) {
+		return true
+	}
+	return len(seg) >= 16 && isAllHex(seg)
+}
+
+func isAllDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// isUUID reports whether s is in the canonical 8-4-4-4-12 hex form.
+func isUUID(s string) bool {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return false
+	}
+	return isAllHex(s[0:8]) && isAllHex(s[9:13]) && isAllHex(s[14:18]) && isAllHex(s[19:23]) && isAllHex(s[24:36])
 }
 
 // FastHTTPHeaderCarrier adapts FastHTTP headers for OpenTelemetry propagation
