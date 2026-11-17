@@ -29,14 +29,16 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// with ID-like segments replaced by {id}; after routing it becomes
 			// "{method} {route}" when a route template is known, or "{method}"
 			// for an unrouted 3xx/4xx response (see below).
-			spanName := string(ctx.Method())
+			rawMethod := string(ctx.Method())
+			method := normalizeMethod(rawMethod)
+			spanName := method
 			if tmpl := templatePath(ctx); tmpl != "" {
 				spanName += " " + tmpl
 			}
 			reqCtx, span := tracer.Start(reqCtx, spanName,
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(
-					semconv.HTTPRequestMethodKey.String(string(ctx.Method())),
+					semconv.HTTPRequestMethodKey.String(method),
 					semconv.URLPath(string(ctx.URI().Path())),
 					semconv.URLScheme(string(ctx.URI().Scheme())),
 					semconv.URLDomain(string(ctx.URI().Host())),
@@ -44,6 +46,10 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				),
 			)
 			defer span.End()
+
+			if method != rawMethod {
+				span.SetAttributes(semconv.HTTPRequestMethodOriginal(rawMethod))
+			}
 
 			if q := ctx.URI().QueryString(); len(q) > 0 {
 				span.SetAttributes(semconv.URLQuery(redactQuery(string(q))))
@@ -85,13 +91,13 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Name the span after the route template once routing has run, so
 			// span names and http.route stay low-cardinality.
 			if route := routeFromCtx(ctx); route != "" {
-				span.SetName(string(ctx.Method()) + " " + route)
+				span.SetName(method + " " + route)
 				span.SetAttributes(semconv.HTTPRoute(route))
 			} else if sc := ctx.Response.StatusCode(); sc >= 300 && sc < 500 {
 				// Unrouted redirects and client errors (404s, auth rejections
 				// before routing, 405, 429) come from arbitrary paths: name
 				// them after the method only, not one span name per path.
-				span.SetName(string(ctx.Method()))
+				span.SetName(method)
 			}
 
 			// Set span status based on HTTP status code
@@ -252,6 +258,21 @@ func redactQuery(raw string) string {
 		}
 	}
 	return strings.Join(parts, "&")
+}
+
+// knownMethods are the HTTP methods recorded as-is (semconv's well-known set).
+var knownMethods = map[string]struct{}{
+	"GET": {}, "HEAD": {}, "POST": {}, "PUT": {}, "DELETE": {},
+	"CONNECT": {}, "OPTIONS": {}, "TRACE": {}, "PATCH": {},
+}
+
+// normalizeMethod returns the method, or "_OTHER" for a method outside the
+// known set, so client-chosen method tokens can't drive span-name cardinality.
+func normalizeMethod(m string) string {
+	if _, ok := knownMethods[m]; ok {
+		return m
+	}
+	return "_OTHER"
 }
 
 // FastHTTPHeaderCarrier adapts FastHTTP headers for OpenTelemetry propagation

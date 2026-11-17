@@ -269,3 +269,39 @@ func TestFastHTTPMiddleware_UnroutedRedirectOrClientError_SpanNameIsMethod(t *te
 		})
 	}
 }
+
+// AC-16: methods outside the standard set are recorded as "_OTHER" in the span
+// name and http.request.method (with the original in
+// http.request.method_original), so arbitrary method tokens can't create one
+// span name per method.
+func TestFastHTTPMiddleware_UnknownMethod_RecordedAsOther(t *testing.T) {
+	span := serveThroughMiddleware(t, "X1", "/", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+	})
+	if span.Name() != "_OTHER" {
+		t.Errorf("span name = %q, want %q", span.Name(), "_OTHER")
+	}
+	if v, _ := spanAttr(span, "http.request.method"); v.AsString() != "_OTHER" {
+		t.Errorf("http.request.method = %q, want _OTHER", v.AsString())
+	}
+	if v, ok := spanAttr(span, "http.request.method_original"); !ok || v.AsString() != "X1" {
+		t.Errorf("http.request.method_original = %q (set=%v), want X1", v.AsString(), ok)
+	}
+
+	routed := serveThroughMiddleware(t, "PROPFIND", "/files/1", func(ctx *fasthttp.RequestCtx) {
+		SetHTTPRoute(ctx, "/files/{id}")
+	})
+	if routed.Name() != "_OTHER /files/{id}" {
+		t.Errorf("routed span name = %q, want %q", routed.Name(), "_OTHER /files/{id}")
+	}
+
+	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"} {
+		s := serveThroughMiddleware(t, m, "/x", func(ctx *fasthttp.RequestCtx) {})
+		if v, _ := spanAttr(s, "http.request.method"); v.AsString() != m {
+			t.Errorf("standard method %s recorded as %q", m, v.AsString())
+		}
+		if _, ok := spanAttr(s, "http.request.method_original"); ok {
+			t.Errorf("standard method %s must not set http.request.method_original", m)
+		}
+	}
+}
