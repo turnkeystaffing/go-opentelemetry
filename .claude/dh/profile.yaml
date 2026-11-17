@@ -1,0 +1,79 @@
+# Project profile: go-opentelemetry (shared OpenTelemetry Go library: tracer/meter providers, HTTP middleware, slog, pgx/redis/aws instrumentation, oteltest helpers)
+# Copied into the repo as .claude/dh/profile.yaml by dh-kit-setup; change it here via a PR.
+
+project:
+  name: go-opentelemetry
+  short: otel
+  repo: git@github.com:turnkeystaffing/go-opentelemetry.git   # local clones may use an ssh host alias
+  local_path: ~/work/ai-workspace/go/src/go-opentelemetry
+
+tracker:
+  type: jira-cloud
+  site: getnative.atlassian.net   # must be dh-mcp's JIRA_SITE
+  project_key: AIN              # shared project; tickets for this repo carry the scope label below
+  mcp: dh-mcp                # server "dh" (dh plugin): every tool takes repo = scm.workspace/scm.repo_slug; this file, as merged, is the scope (D-104)
+  scope_label: go-opentelemetry   # REQUIRED on every ticket for this repo; dh-mcp adds it on create and refuses tickets without it
+  issue_types: [Epic, Task]
+  # Transition NAMES (same AIN workflow as inbound-integration). Resolve IDs at runtime; never hard-code IDs.
+  # Workflow: To Do -> In Progress -> In Review -> TEST -> Done
+  transitions:
+    start: In Progress
+    review: In Review
+    done: Done
+    # "TEST" exists (QA stage). The agent never moves tickets to TEST; humans do.
+  labels:
+    agent_ready: dh-ready       # system label, fixed by the kit, do not change (D-57)
+    agent_created: dh           # system label, fixed by the kit, do not change (D-57)
+    layers: {BE: backend}       # Go library, backend only (team label)
+    grooming: needs-grooming    # team label; set when the criteria need the team, removed at start (D-57)
+  create_in: backlog            # where dh-task-create puts new tickets (D-74)
+  sprints:
+    on_start: add               # add to the active sprint when moving to In Progress (add | ask | none, D-74)
+
+scm:
+  type: github
+  workspace: turnkeystaffing    # GitHub owner
+  repo_slug: go-opentelemetry
+  mcp: dh-mcp                # server "dh" (dh plugin): github_pr_* tools (no merge/approve/decline/delete exist)
+  base_branch: master           # the only branch
+  protected: [master]
+  branch_patterns:
+    task: "task/{key}-{slug}"
+    bug: "bugfix/{key}-{slug}"
+
+workflows:
+  create: dh-task-create
+  implement: dh-tdd
+  diagnose: dh-diagnose
+
+docs:                           # used as the domain glossary until a CONTEXT.md exists
+  - CLAUDE.md
+  - AGENTS.md
+
+# dh-task-verify runs every key below on every task; only integration is conditional (evidence.md rule 4).
+# Every other key must end on its own and leave `git status --porcelain` empty (ignored build output is fine): no dev servers, watchers, migrations or fix-mode formatters.
+commands:                       # run from the repo root (Go only, no frontend); verified 2026-11-17
+  backend:
+    unit: "go test ./... -count=1 -shuffle=on"   # includes integration_test.go (no build tag, in-memory exporters)
+    lint: "go vet ./... && test -z \"$(gofmt -l $(git ls-files '*.go'))\""   # no golangci config in this repo
+    build: "go build ./..."
+
+ci:
+  provider: none                # no CI config in the repo
+  enforced: false               # evidence is local (dh plugin: dh/conventions/evidence.md)
+
+review:                         # dh-pr-review (dh plugin 0.12.2+)
+  peer: auto                    # auto (default) | off: the other AI vendor's read-only reviewer next to the six passes (D-98)
+  # peer_model:                 # per peer vendor, passed to dh peer-review --peer-model (missing: the peer CLI's default)
+  #   codex: gpt-6.1-sol
+  #   claude: claude-opus-5-5
+  # peer_timeout: 15m           # passed to dh peer-review --timeout (at most 100m)
+
+agents:
+  allowed: [claude, codex]
+  never:
+    - merge or approve pull requests
+    - push to protected branches or force-push
+    - delete Jira issues, releases, tags or branches
+    - commit secrets, .env files or personal notes
+    - move Jira tickets to TEST (humans do)
