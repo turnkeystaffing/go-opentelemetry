@@ -203,6 +203,11 @@ func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
 		{"key without value kept", "token&debug", "token&debug"},
 		{"empty value kept", "token=", "token="},
 		{"repeated sensitive key", "token=a&token=b", "token=REDACTED&token=REDACTED"},
+		{"camelCase and hyphen spellings", "accessToken=a&x-api-key=b&clientSecret=c&X-Goog-Credential=d", "accessToken=REDACTED&x-api-key=REDACTED&clientSecret=REDACTED&X-Goog-Credential=REDACTED"},
+		{"remaining listed keys", "refresh_token=a&id_token=b&X-Amz-Credential=c&X-Amz-Security-Token=d&auth=e&authorization=f&passwd=g&secret=h", "refresh_token=REDACTED&id_token=REDACTED&X-Amz-Credential=REDACTED&X-Amz-Security-Token=REDACTED&auth=REDACTED&authorization=REDACTED&passwd=REDACTED&secret=REDACTED"},
+		{"exact short keys", "key=AIza&pwd=p&otp=1&code=c", "key=REDACTED&pwd=REDACTED&otp=REDACTED&code=REDACTED"},
+		{"session and jwt", "sessionId=s&jwt=j", "sessionId=REDACTED&jwt=REDACTED"},
+		{"lookalikes kept", "keyword=go&monkey=1&zipcode=94016&author=me&design=x", "keyword=go&monkey=1&zipcode=94016&author=me&design=x"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

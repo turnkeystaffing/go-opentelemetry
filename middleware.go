@@ -202,15 +202,35 @@ func isUUID(s string) bool {
 	return isAllHex(s[0:8]) && isAllHex(s[9:13]) && isAllHex(s[14:18]) && isAllHex(s[19:23]) && isAllHex(s[24:36])
 }
 
-// sensitiveQueryKeys lists query parameters whose values are replaced with
-// "REDACTED" in url.query (compared lower-case). It follows the semantic
-// conventions' list (AWS, GCS, Azure signatures) plus common credential names.
-var sensitiveQueryKeys = map[string]struct{}{
-	"awsaccesskeyid": {}, "signature": {}, "sig": {}, "x-goog-signature": {},
-	"x-amz-signature": {}, "x-amz-security-token": {}, "x-amz-credential": {},
-	"token": {}, "access_token": {}, "refresh_token": {}, "id_token": {},
-	"code": {}, "password": {}, "passwd": {}, "secret": {}, "client_secret": {},
-	"api_key": {}, "apikey": {}, "auth": {}, "authorization": {},
+// Query parameter names are normalized (lower-cased, "-" and "_" removed)
+// before matching, so "accessToken", "access-token" and "ACCESS_TOKEN" match
+// alike. A parameter is sensitive when its normalized name contains one of
+// sensitiveQueryParts or equals one of sensitiveQueryNames.
+var (
+	sensitiveQueryParts = []string{
+		"token", "secret", "password", "passwd", "signature", "credential",
+		"apikey", "session", "jwt",
+	}
+	sensitiveQueryNames = map[string]struct{}{
+		"key": {}, "sig": {}, "code": {}, "auth": {}, "authorization": {},
+		"pwd": {}, "otp": {}, "awsaccesskeyid": {},
+	}
+	queryKeyNormalizer = strings.NewReplacer("-", "", "_", "")
+)
+
+// isSensitiveQueryKey reports whether a decoded query parameter name holds a
+// credential or signature whose value must not be recorded.
+func isSensitiveQueryKey(name string) bool {
+	n := queryKeyNormalizer.Replace(strings.ToLower(name))
+	if _, ok := sensitiveQueryNames[n]; ok {
+		return true
+	}
+	for _, part := range sensitiveQueryParts {
+		if strings.Contains(n, part) {
+			return true
+		}
+	}
+	return false
 }
 
 // redactQuery returns the raw query with the values of sensitive parameters
@@ -226,7 +246,7 @@ func redactQuery(raw string) string {
 		if err != nil {
 			name = key
 		}
-		if _, ok := sensitiveQueryKeys[strings.ToLower(name)]; ok {
+		if isSensitiveQueryKey(name) {
 			parts[i] = key + "=REDACTED"
 		}
 	}
