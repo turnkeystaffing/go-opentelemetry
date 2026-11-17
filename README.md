@@ -15,8 +15,9 @@ import opentelemetry "github.com/turnkeystaffing/go-opentelemetry"
 
 ## Provider setup
 
-Call `InitializeProvider` once at startup. It sets the global tracer, meter and
-logger providers and the W3C `traceparent` + `baggage` propagator.
+Call `InitializeProvider` once at startup. It sets the W3C `traceparent` +
+`baggage` propagator and the global provider of each enabled signal (tracer,
+meter, and logger when `Components.Logs` is on).
 
 ```go
 provider, err := opentelemetry.InitializeProvider(ctx, opentelemetry.Config{
@@ -37,11 +38,15 @@ if err != nil {
 defer provider.Shutdown(context.Background())
 ```
 
-- `Enabled: false` returns no-op providers, so the rest of the code needs no `if`.
+- `Enabled: false` returns providers that export nothing, so tracing and
+  metrics code needs no `if`. `Provider.LoggerProvider` is nil whenever logs
+  are off (including `Enabled: false`): check it before use.
 - Toggle signals with `Components.Traces`, `Components.Metrics`, `Components.Logs`
   (`*bool`). Traces and metrics default to on; logs default to off.
 - The exporter uses TLS by default. Set `Insecure: true` only for a collector
   reached over a trusted local link (sidecar, localhost); it sends plaintext.
+  The standard `OTEL_EXPORTER_OTLP_INSECURE` / `OTEL_EXPORTER_OTLP_*_INSECURE`
+  environment variables can also switch an exporter to plaintext.
 - If the metric exporter can't be created, startup still succeeds without
   metrics and the error goes to the global OTel error handler
   (`otel.SetErrorHandler` to route it to your logger).
@@ -74,14 +79,25 @@ one, `http.route` is left unset and the span name is a best-effort fallback:
 - ID-like segments (all digits, UUIDs, 16+ hex characters) are replaced with
   `{id}`; other segments (slugs, short tokens) are kept as sent. Provide a
   template for any endpoint with other kinds of path parameters.
-- A 404 is named after the method only (`GET`), so unmatched paths such as
-  scanner traffic don't create one span name per path.
+- A 3xx or 4xx response (404, 401/403 from auth middleware before routing,
+  405, 429, redirects) is named after the method only (`GET`), so unmatched
+  paths such as scanner traffic don't create one span name per path.
+
+Methods outside GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE and PATCH
+are recorded as `_OTHER` (span name and `http.request.method`), with the
+original in `http.request.method_original`.
+
+Samplers see the span name from before routing (the path-derived fallback);
+the final name is set when the handler returns.
 
 Pass only templates to `SetHTTPRoute`, never the raw path.
 
 `url.path` holds the decoded path. `url.query` holds the raw query with the
-values of credential and signature parameters (`token`, `code`, `password`,
-`api_key`, `X-Amz-Signature`, `sig`, …) replaced with `REDACTED`.
+values of credential and signature parameters replaced with `REDACTED`. Names
+are compared lower-cased with `-` and `_` removed; a parameter is redacted when
+its name contains `token`, `secret`, `password`, `passwd`, `signature`,
+`credential`, `apikey`, `session` or `jwt`, or is `key`, `sig`, `code`, `auth`,
+`authorization`, `pwd`, `otp` or `AWSAccessKeyId`.
 
 Span status follows the HTTP semantic conventions: only 5xx responses mark the
 span as Error.
@@ -96,6 +112,10 @@ resp, err := client.Do(req) // client span + traceparent header
 
 `NewInstrumentedHTTPClientWithOptions` accepts `otelhttp.Option`s. For non-`net/http`
 clients, `InjectTraceHeaders(ctx, headers)` fills a `map[string]string`.
+
+Client spans record the full outbound URL (`url.full`). otelhttp redacts only a
+few signature parameters there, so don't put credentials such as `api_key` or
+`token` in outbound query strings; send them in headers.
 
 ## Logging (slog)
 
@@ -192,7 +212,8 @@ services emit, so check dashboards, alerts and sampling rules that key on:
 3. **`url.path` has no query string** and is the decoded, normalized path
    (previously the raw request target). The query moved to `url.query`, with
    sensitive parameter values redacted.
-4. **Unmatched 404s are named after the method only** (`GET`).
+4. **Unrouted 3xx/4xx responses are named after the method only** (`GET`),
+   and non-standard methods are recorded as `_OTHER`.
 
 Also in this release: metric exporter init failures are reported through
 `otel.Handle`; `SpanOp` durations keep sub-millisecond precision; a failing

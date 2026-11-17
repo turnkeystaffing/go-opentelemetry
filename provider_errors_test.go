@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,21 +15,45 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-// restoreOTelGlobals puts back the global OTel providers, propagator and error
-// handler that InitializeProvider replaces, so tests don't leak global state.
+// restoreOTelGlobals resets, after the test, the global OTel state that
+// InitializeProvider replaces: providers, propagator and error handler.
+//
+// A provider is put back only if the test replaced it: setting a global to its
+// current value is rejected by OTel. When the saved value is OTel's default
+// delegating provider, it stays delegated to the provider the test installed
+// (OTel delegates once per process), so later tests see that provider, shut
+// down by then. These tests must not use t.Parallel.
 func restoreOTelGlobals(t *testing.T) {
 	t.Helper()
 	tp, mp, lp := otel.GetTracerProvider(), otel.GetMeterProvider(), global.GetLoggerProvider()
 	prop := otel.GetTextMapPropagator()
 	t.Cleanup(func() {
-		otel.SetTracerProvider(tp)
-		otel.SetMeterProvider(mp)
-		global.SetLoggerProvider(lp)
-		otel.SetTextMapPropagator(prop)
+		if otel.GetTracerProvider() != tp {
+			otel.SetTracerProvider(tp)
+		}
+		if otel.GetMeterProvider() != mp {
+			otel.SetMeterProvider(mp)
+		}
+		if global.GetLoggerProvider() != lp {
+			global.SetLoggerProvider(lp)
+		}
+		if !sameGlobal(otel.GetTextMapPropagator(), prop) {
+			otel.SetTextMapPropagator(prop)
+		}
 		// OTel's default error handler can't be re-installed once replaced
 		// (it is the global delegate), so restore its behaviour: log the error.
 		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { log.Print(err) }))
 	})
+}
+
+// sameGlobal reports whether two global OTel values are identical, treating
+// values of non-comparable types (e.g. composite propagators) as different.
+func sameGlobal(a, b any) bool {
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || ta == nil || !ta.Comparable() {
+		return ta == nil && tb == nil
+	}
+	return a == b
 }
 
 type recordingErrorHandler struct {
