@@ -120,8 +120,8 @@ func TestFastHTTPMiddleware_URLPathExcludesQuery(t *testing.T) {
 	if v, _ := spanAttr(span, "url.path"); v.AsString() != "/users/123" {
 		t.Errorf("url.path = %q, want /users/123", v.AsString())
 	}
-	if v, ok := spanAttr(span, "url.query"); !ok || v.AsString() != "token=x" {
-		t.Errorf("url.query = %q (set=%v), want token=x", v.AsString(), ok)
+	if v, ok := spanAttr(span, "url.query"); !ok || v.AsString() != "token=REDACTED" {
+		t.Errorf("url.query = %q (set=%v), want token=REDACTED", v.AsString(), ok)
 	}
 
 	noQuery := serveThroughMiddleware(t, "GET", "/users/123", func(ctx *fasthttp.RequestCtx) {})
@@ -174,5 +174,35 @@ func TestFastHTTPMiddleware_NotFoundWithoutRoute_SpanNameIsMethod(t *testing.T) 
 	})
 	if routed.Name() != "GET /users/{id}" {
 		t.Errorf("routed 404 span name = %q, want %q", routed.Name(), "GET /users/{id}")
+	}
+}
+
+// AC-15: values of sensitive query parameters are replaced with REDACTED in
+// url.query (keys matched case-insensitively); other parameters stay readable.
+func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"plain params kept", "page=2&sort=name", "page=2&sort=name"},
+		{"token", "token=abc&page=2", "token=REDACTED&page=2"},
+		{"oauth callback", "code=xyz&state=s1", "code=REDACTED&state=s1"},
+		{"case-insensitive key", "Access_Token=abc", "Access_Token=REDACTED"},
+		{"aws presigned", "X-Amz-Signature=deadbeef&X-Amz-Date=20260101", "X-Amz-Signature=REDACTED&X-Amz-Date=20260101"},
+		{"gcs and azure sig", "X-Goog-Signature=a&sig=b&Signature=c&AWSAccessKeyId=d", "X-Goog-Signature=REDACTED&sig=REDACTED&Signature=REDACTED&AWSAccessKeyId=REDACTED"},
+		{"api key and password", "api_key=k&apikey=k2&password=p&client_secret=s", "api_key=REDACTED&apikey=REDACTED&password=REDACTED&client_secret=REDACTED"},
+		{"percent-encoded key", "acc%65ss_token=abc", "acc%65ss_token=REDACTED"},
+		{"key without value kept", "token&debug", "token&debug"},
+		{"empty value kept", "token=", "token="},
+		{"repeated sensitive key", "token=a&token=b", "token=REDACTED&token=REDACTED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			span := serveThroughMiddleware(t, "GET", "/cb?"+tt.query, func(ctx *fasthttp.RequestCtx) {})
+			if v, _ := spanAttr(span, "url.query"); v.AsString() != tt.want {
+				t.Errorf("url.query = %q, want %q", v.AsString(), tt.want)
+			}
+		})
 	}
 }

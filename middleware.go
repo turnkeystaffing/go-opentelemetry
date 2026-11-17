@@ -3,6 +3,7 @@ package opentelemetry
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/valyala/fasthttp"
@@ -45,7 +46,7 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			defer span.End()
 
 			if q := ctx.URI().QueryString(); len(q) > 0 {
-				span.SetAttributes(semconv.URLQuery(string(q)))
+				span.SetAttributes(semconv.URLQuery(redactQuery(string(q))))
 			}
 
 			// Store the trace context in FastHTTP user values for downstream access
@@ -199,6 +200,37 @@ func isUUID(s string) bool {
 		return false
 	}
 	return isAllHex(s[0:8]) && isAllHex(s[9:13]) && isAllHex(s[14:18]) && isAllHex(s[19:23]) && isAllHex(s[24:36])
+}
+
+// sensitiveQueryKeys lists query parameters whose values are replaced with
+// "REDACTED" in url.query (compared lower-case). It follows the semantic
+// conventions' list (AWS, GCS, Azure signatures) plus common credential names.
+var sensitiveQueryKeys = map[string]struct{}{
+	"awsaccesskeyid": {}, "signature": {}, "sig": {}, "x-goog-signature": {},
+	"x-amz-signature": {}, "x-amz-security-token": {}, "x-amz-credential": {},
+	"token": {}, "access_token": {}, "refresh_token": {}, "id_token": {},
+	"code": {}, "password": {}, "passwd": {}, "secret": {}, "client_secret": {},
+	"api_key": {}, "apikey": {}, "auth": {}, "authorization": {},
+}
+
+// redactQuery returns the raw query with the values of sensitive parameters
+// replaced by "REDACTED", keeping keys, order and other values as sent.
+func redactQuery(raw string) string {
+	parts := strings.Split(raw, "&")
+	for i, part := range parts {
+		key, value, hasValue := strings.Cut(part, "=")
+		if !hasValue || value == "" {
+			continue
+		}
+		name, err := url.QueryUnescape(key)
+		if err != nil {
+			name = key
+		}
+		if _, ok := sensitiveQueryKeys[strings.ToLower(name)]; ok {
+			parts[i] = key + "=REDACTED"
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 // FastHTTPHeaderCarrier adapts FastHTTP headers for OpenTelemetry propagation
