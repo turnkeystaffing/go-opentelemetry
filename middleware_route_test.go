@@ -155,3 +155,24 @@ func TestFastHTTPMiddleware_StatusFollowsServerSemconv(t *testing.T) {
 		})
 	}
 }
+
+// AC-14: a 404 with no route template (scanners, typos, unknown endpoints) is
+// named after the method only, so unmatched paths can't create one span name
+// per path or put path tokens into span names.
+func TestFastHTTPMiddleware_NotFoundWithoutRoute_SpanNameIsMethod(t *testing.T) {
+	span := serveThroughMiddleware(t, "GET", "/wp-admin/x7f9q/setup.php", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+	})
+	if span.Name() != "GET" {
+		t.Errorf("span name = %q, want %q", span.Name(), "GET")
+	}
+
+	// A 404 from a matched route (e.g. "user not found") keeps the route name.
+	routed := serveThroughMiddleware(t, "GET", "/users/123", func(ctx *fasthttp.RequestCtx) {
+		SetHTTPRoute(ctx, "/users/{id}")
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+	})
+	if routed.Name() != "GET /users/{id}" {
+		t.Errorf("routed 404 span name = %q, want %q", routed.Name(), "GET /users/{id}")
+	}
+}

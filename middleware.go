@@ -24,9 +24,10 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Extract trace context from incoming headers
 			reqCtx := propagator.Extract(context.Background(), &FastHTTPHeaderCarrier{ctx})
 
-			// Create span for the HTTP request. The name never contains the raw
-			// path: it is "{method} {template}" with ID-like segments replaced,
-			// and is refined to the route template after routing (see below).
+			// Create span for the HTTP request. The name is "{method} {path}"
+			// with ID-like segments replaced by {id}; after routing it becomes
+			// "{method} {route}" when a route template is known, or "{method}"
+			// for an unmatched 404 (see below).
 			spanName := string(ctx.Method())
 			if tmpl := templatePath(ctx); tmpl != "" {
 				spanName += " " + tmpl
@@ -85,6 +86,10 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			if route := routeFromCtx(ctx); route != "" {
 				span.SetName(string(ctx.Method()) + " " + route)
 				span.SetAttributes(semconv.HTTPRoute(route))
+			} else if ctx.Response.StatusCode() == fasthttp.StatusNotFound {
+				// Unmatched paths (scanners, typos) must not create one span
+				// name per path: name them after the method only.
+				span.SetName(string(ctx.Method()))
 			}
 
 			// Set span status based on HTTP status code
@@ -143,17 +148,13 @@ func routeFromCtx(ctx *fasthttp.RequestCtx) string {
 
 // templatePath derives a low-cardinality span-name target from the request path
 // when no route template is known: path segments that are all digits, a UUID or
-// 16+ hex characters become "{id}"; other segments are kept. It returns "" when
-// the request target is not a path (e.g. "OPTIONS *").
+// 16+ hex characters become "{id}"; other segments are kept. It returns "" for
+// the server-wide "OPTIONS *" target, which has no path.
 func templatePath(ctx *fasthttp.RequestCtx) string {
 	if string(ctx.Request.Header.RequestURI()) == "*" {
 		return ""
 	}
-	path := string(ctx.Path())
-	if !strings.HasPrefix(path, "/") {
-		return ""
-	}
-	segments := strings.Split(path, "/")
+	segments := strings.Split(string(ctx.Path()), "/")
 	for i, seg := range segments {
 		if isIDSegment(seg) {
 			segments[i] = "{id}"
