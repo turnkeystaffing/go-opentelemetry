@@ -3,14 +3,33 @@ package opentelemetry
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/log/global"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
+
+// restoreOTelGlobals puts back the global OTel providers, propagator and error
+// handler that InitializeProvider replaces, so tests don't leak global state.
+func restoreOTelGlobals(t *testing.T) {
+	t.Helper()
+	tp, mp, lp := otel.GetTracerProvider(), otel.GetMeterProvider(), global.GetLoggerProvider()
+	prop := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(tp)
+		otel.SetMeterProvider(mp)
+		global.SetLoggerProvider(lp)
+		otel.SetTextMapPropagator(prop)
+		// OTel's default error handler can't be re-installed once replaced
+		// (it is the global delegate), so restore its behaviour: log the error.
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { log.Print(err) }))
+	})
+}
 
 type recordingErrorHandler struct {
 	mu   sync.Mutex
@@ -32,18 +51,18 @@ func TestInitializeProvider_MetricExporterFailure_ReportedAndNonFatal(t *testing
 	newMetricExporter = func(context.Context, Config) (sdkmetric.Exporter, error) { return nil, exporterErr }
 	t.Cleanup(func() { newMetricExporter = prevNew })
 
+	restoreOTelGlobals(t)
+	logsOn := true // logs are off by default; turn them on to check they're unaffected
 	handler := &recordingErrorHandler{}
 	otel.SetErrorHandler(handler)
-	t.Cleanup(func() { otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) {})) })
 
-	logsOff := false
 	cfg := Config{
 		Enabled:     true,
 		ServiceName: "svc",
 		Protocol:    ProtocolOTLPHTTP,
 		Endpoint:    "localhost:4318",
 		Insecure:    true,
-		Components:  ComponentsConfig{Logs: &logsOff},
+		Components:  ComponentsConfig{Logs: &logsOn},
 	}
 
 	p, err := InitializeProvider(context.Background(), cfg)
@@ -57,6 +76,9 @@ func TestInitializeProvider_MetricExporterFailure_ReportedAndNonFatal(t *testing
 	}
 	if p.TracerProvider == nil || p.Tracer == nil {
 		t.Fatal("traces must be unaffected by the metric failure")
+	}
+	if p.LoggerProvider == nil {
+		t.Fatal("logs must be unaffected by the metric failure")
 	}
 
 	handler.mu.Lock()
@@ -94,6 +116,7 @@ func TestCreateResource_UsesSemconv126Schema(t *testing.T) {
 // AC-11: an invalid config is rejected with the validation error, before any
 // resource or exporter is built.
 func TestInitializeProvider_InvalidConfig_ReturnsValidationError(t *testing.T) {
+	restoreOTelGlobals(t)
 	_, err := InitializeProvider(context.Background(), Config{Enabled: true, ServiceName: "svc", Endpoint: "localhost:4318"})
 	if err == nil || !strings.Contains(err.Error(), "invalid OpenTelemetry configuration") || !strings.Contains(err.Error(), "protocol is required") {
 		t.Fatalf("want validation error about the missing protocol, got %v", err)

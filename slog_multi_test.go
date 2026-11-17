@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -326,11 +327,13 @@ func (h failingHandler) Handle(_ context.Context, r slog.Record) error {
 func (h failingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h failingHandler) WithGroup(string) slog.Handler      { return h }
 
-// recordingHandler keeps the records it receives.
+// recordingHandler keeps the records it receives and, like real handlers that
+// enrich records, adds an attribute to each one.
 type recordingHandler struct{ got []slog.Record }
 
 func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
 func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	r.AddAttrs(slog.String("seen_by", "recorder"))
 	h.got = append(h.got, r)
 	return nil
 }
@@ -345,8 +348,12 @@ func TestMultiHandler_FailingHandlerDoesNotBlockOthers(t *testing.T) {
 	rec := &recordingHandler{}
 	h := NewMultiHandler(failingHandler{err: errA}, rec, failingHandler{err: errB})
 
+	// More attrs than slog.Record stores inline, so copies of the record share
+	// backing storage unless each handler gets a Clone.
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)
-	r.AddAttrs(slog.Int("a1", 1), slog.Int("a2", 2), slog.Int("a3", 3), slog.Int("a4", 4), slog.Int("a5", 5))
+	for i := 0; i < 10; i++ {
+		r.AddAttrs(slog.Int(fmt.Sprintf("a%d", i), i))
+	}
 	err := h.Handle(context.Background(), r)
 
 	if len(rec.got) != 1 || rec.got[0].Message != "hello" {
@@ -356,7 +363,8 @@ func TestMultiHandler_FailingHandlerDoesNotBlockOthers(t *testing.T) {
 		t.Errorf("returned error must contain every failure, got %v", err)
 	}
 	rec.got[0].Attrs(func(a slog.Attr) bool {
-		if a.Key == "leaked" {
+		// slog adds a "!BUG" attr when AddAttrs is called on a shared copy.
+		if a.Key == "leaked" || strings.HasPrefix(a.Key, "!BUG") {
 			t.Errorf("record shared between handlers: saw %v", a)
 		}
 		return true

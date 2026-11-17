@@ -152,6 +152,13 @@ func TestFastHTTPMiddleware_StatusFollowsServerSemconv(t *testing.T) {
 			if span.Status().Code != tt.want {
 				t.Errorf("status %d: span status = %v, want %v", tt.status, span.Status().Code, tt.want)
 			}
+			wantEvents := 0
+			if tt.want == codes.Error {
+				wantEvents = 1 // the 5xx is recorded as an exception event
+			}
+			if got := len(span.Events()); got != wantEvents || (got == 1 && span.Events()[0].Name != "exception") {
+				t.Errorf("status %d: events = %v, want %d exception event(s)", tt.status, span.Events(), wantEvents)
+			}
 		})
 	}
 }
@@ -204,5 +211,27 @@ func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
 				t.Errorf("url.query = %q, want %q", v.AsString(), tt.want)
 			}
 		})
+	}
+}
+
+// AC-1: an explicit SetHTTPRoute wins over fasthttp/router's matched route, and
+// an empty SetHTTPRoute falls back to the router's route.
+func TestFastHTTPMiddleware_RouteSourcePrecedence(t *testing.T) {
+	const routerKey = "__matchedRoutePath::k3yR4nd0m__"
+
+	explicit := serveThroughMiddleware(t, "GET", "/users/123", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetUserValue(routerKey, "/users/{userID}")
+		SetHTTPRoute(ctx, "/users/{id}")
+	})
+	if explicit.Name() != "GET /users/{id}" {
+		t.Errorf("SetHTTPRoute must win: span name = %q, want %q", explicit.Name(), "GET /users/{id}")
+	}
+
+	empty := serveThroughMiddleware(t, "GET", "/users/123", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetUserValue(routerKey, "/users/{userID}")
+		SetHTTPRoute(ctx, "")
+	})
+	if empty.Name() != "GET /users/{userID}" {
+		t.Errorf("empty SetHTTPRoute must fall back to the router route: span name = %q", empty.Name())
 	}
 }
