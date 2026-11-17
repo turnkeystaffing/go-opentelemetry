@@ -3,12 +3,13 @@ package opentelemetry
 import (
 	"context"
 	"fmt"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"strings"
 
 	"github.com/valyala/fasthttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -33,7 +34,6 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 					semconv.URLScheme(string(ctx.URI().Scheme())),
 					semconv.URLDomain(string(ctx.URI().Host())),
 					semconv.UserAgentOriginal(string(ctx.UserAgent())),
-					semconv.HTTPRoute(string(ctx.Path())),
 				),
 			)
 			defer span.End()
@@ -71,6 +71,13 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Call the next handler
 			next(ctx)
 
+			// Name the span after the route template once routing has run, so
+			// span names and http.route stay low-cardinality.
+			if route := routeFromCtx(ctx); route != "" {
+				span.SetName(string(ctx.Method()) + " " + route)
+				span.SetAttributes(semconv.HTTPRoute(route))
+			}
+
 			// Set span status based on HTTP status code
 			statusCode := ctx.Response.StatusCode()
 			span.SetAttributes(
@@ -89,6 +96,43 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			}
 		}
 	}
+}
+
+// httpRouteKey is the user-value key under which SetHTTPRoute stores the route template.
+type httpRouteKey struct{}
+
+// fasthttpRouterRoutePrefix is the prefix of the user-value key under which
+// github.com/fasthttp/router stores the matched route when SaveMatchedRoutePath
+// is enabled. The router randomizes the rest of the key at startup, so it is
+// matched by prefix instead of importing the router.
+const fasthttpRouterRoutePrefix = "__matchedRoutePath::"
+
+// SetHTTPRoute records the low-cardinality route template (e.g. "/users/{id}")
+// that matched the request. FastHTTPMiddleware uses it for the span name and
+// the http.route attribute. Call it from the handler or router adapter before
+// the handler returns.
+func SetHTTPRoute(ctx *fasthttp.RequestCtx, route string) {
+	ctx.SetUserValue(httpRouteKey{}, route)
+}
+
+// routeFromCtx returns the route template set by SetHTTPRoute, or else the one
+// stored by github.com/fasthttp/router, or "" when neither is present.
+func routeFromCtx(ctx *fasthttp.RequestCtx) string {
+	if route, ok := ctx.UserValue(httpRouteKey{}).(string); ok && route != "" {
+		return route
+	}
+	var route string
+	ctx.VisitUserValuesAll(func(key, value any) {
+		if route != "" {
+			return
+		}
+		if k, ok := key.(string); ok && strings.HasPrefix(k, fasthttpRouterRoutePrefix) {
+			if v, ok := value.(string); ok {
+				route = v
+			}
+		}
+	})
+	return route
 }
 
 // FastHTTPHeaderCarrier adapts FastHTTP headers for OpenTelemetry propagation
