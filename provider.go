@@ -159,9 +159,10 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.IsMetricsEnabled() {
 		mp, metricShutdown, err := initMeterProvider(ctx, cfg, res)
 		if err != nil {
-			// For protocols that don't support metrics, we create a no-op meter provider
+			// Keep startup working without metrics, but report the failure
+			// through the global OTel error handler instead of dropping it.
+			otel.Handle(fmt.Errorf("opentelemetry: metrics disabled: failed to initialize meter provider: %w", err))
 			meterProvider = sdkmetric.NewMeterProvider()
-			metricShutdown = func(context.Context) error { return nil }
 		} else {
 			meterProvider = mp
 			shutdownFuncs = append(shutdownFuncs, metricShutdown)
@@ -309,7 +310,7 @@ func createTraceExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter
 // initMeterProvider initializes the meter provider with appropriate exporter based on protocol
 func initMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdkmetric.MeterProvider, func(context.Context) error, error) {
 	// Create metric exporter based on protocol configuration (metrics only support OTLP)
-	metricExporter, err := createMetricExporter(ctx, cfg)
+	metricExporter, err := newMetricExporter(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
 	}
@@ -329,6 +330,10 @@ func initMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 
 	return meterProvider, meterProvider.Shutdown, nil
 }
+
+// newMetricExporter creates the metric exporter; a variable so tests can
+// simulate an exporter that can't be created.
+var newMetricExporter = createMetricExporter
 
 // createMetricExporter creates the appropriate metric exporter based on protocol configuration
 func createMetricExporter(ctx context.Context, cfg Config) (sdkmetric.Exporter, error) {
