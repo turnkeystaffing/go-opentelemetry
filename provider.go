@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -23,13 +21,11 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 const (
-	// OpenTelemetry schema URL for resource attributes
-	schemaURL = "https://opentelemetry.io/schemas/1.24.0"
-
 	// Protocol constants for telemetry configuration
 	ProtocolOTLPgRPC = "otlp_grpc"
 	ProtocolOTLPHTTP = "otlp_http"
@@ -123,15 +119,15 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		}, nil
 	}
 
+	// Validate configuration before building anything
+	if err := validateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid OpenTelemetry configuration: %w", err)
+	}
+
 	// Create resource with service information
 	res, err := createResource(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-
-	// Validate configuration
-	if err := validateConfig(cfg); err != nil {
-		return nil, fmt.Errorf("invalid OpenTelemetry configuration: %w", err)
 	}
 
 	var shutdownFuncs []func(context.Context) error
@@ -230,7 +226,7 @@ func createResource(cfg Config) (*resource.Resource, error) {
 	}
 
 	return resource.NewWithAttributes(
-		schemaURL,
+		semconv.SchemaURL,
 		attributes...,
 	), nil
 }

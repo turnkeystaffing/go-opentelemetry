@@ -3,10 +3,12 @@ package opentelemetry
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
@@ -67,5 +69,33 @@ func TestInitializeProvider_MetricExporterFailure_ReportedAndNonFatal(t *testing
 	}
 	if !found {
 		t.Errorf("metric exporter error was not reported via otel.Handle; got %v", handler.errs)
+	}
+}
+
+// AC-10: the resource uses the same semconv version (v1.26.0) as the rest of
+// the library, and keeps the existing attribute keys.
+func TestCreateResource_UsesSemconv126Schema(t *testing.T) {
+	res, err := createResource(Config{ServiceName: "svc", ServiceVersion: "1.2.3", Environment: "prod"})
+	if err != nil {
+		t.Fatalf("createResource: %v", err)
+	}
+	if got, want := res.SchemaURL(), "https://opentelemetry.io/schemas/1.26.0"; got != want {
+		t.Errorf("schema URL = %q, want %q", got, want)
+	}
+	want := map[string]string{"service.name": "svc", "service.version": "1.2.3", "deployment.environment": "prod"}
+	for k, v := range want {
+		got, ok := res.Set().Value(attribute.Key(k))
+		if !ok || got.AsString() != v {
+			t.Errorf("%s = %q (set=%v), want %q", k, got.AsString(), ok, v)
+		}
+	}
+}
+
+// AC-11: an invalid config is rejected with the validation error, before any
+// resource or exporter is built.
+func TestInitializeProvider_InvalidConfig_ReturnsValidationError(t *testing.T) {
+	_, err := InitializeProvider(context.Background(), Config{Enabled: true, ServiceName: "svc", Endpoint: "localhost:4318"})
+	if err == nil || !strings.Contains(err.Error(), "invalid OpenTelemetry configuration") || !strings.Contains(err.Error(), "protocol is required") {
+		t.Fatalf("want validation error about the missing protocol, got %v", err)
 	}
 }
