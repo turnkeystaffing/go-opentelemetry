@@ -240,3 +240,32 @@ func TestFastHTTPMiddleware_RouteSourcePrecedence(t *testing.T) {
 		t.Errorf("empty SetHTTPRoute must fall back to the router route: span name = %q", empty.Name())
 	}
 }
+
+// AC-14: without a route template, any 3xx or 4xx response (auth middleware
+// rejecting before routing, 405, 429, router redirects) is named after the
+// method only; 2xx and 5xx keep the templated-path fallback.
+func TestFastHTTPMiddleware_UnroutedRedirectOrClientError_SpanNameIsMethod(t *testing.T) {
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{fasthttp.StatusMovedPermanently, "GET"},
+		{fasthttp.StatusPermanentRedirect, "GET"},
+		{fasthttp.StatusUnauthorized, "GET"},
+		{fasthttp.StatusForbidden, "GET"},
+		{fasthttp.StatusMethodNotAllowed, "GET"},
+		{fasthttp.StatusTooManyRequests, "GET"},
+		{fasthttp.StatusOK, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusInternalServerError, "GET /wp-admin/x7f9q"},
+	}
+	for _, tt := range tests {
+		t.Run(fasthttp.StatusMessage(tt.status), func(t *testing.T) {
+			span := serveThroughMiddleware(t, "GET", "/wp-admin/x7f9q", func(ctx *fasthttp.RequestCtx) {
+				ctx.SetStatusCode(tt.status)
+			})
+			if span.Name() != tt.want {
+				t.Errorf("status %d: span name = %q, want %q", tt.status, span.Name(), tt.want)
+			}
+		})
+	}
+}
