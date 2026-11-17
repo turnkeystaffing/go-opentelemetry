@@ -26,7 +26,6 @@ provider, err := opentelemetry.InitializeProvider(ctx, opentelemetry.Config{
 	Environment:    "production",
 	Protocol:       opentelemetry.ProtocolOTLPgRPC, // or ProtocolOTLPHTTP
 	Endpoint:       "otel-collector:4317",          // host:port, no scheme
-	Insecure:       true,                           // no TLS (local / sidecar collector)
 	Sampler: opentelemetry.SamplerConfig{
 		Type:        "parentbased_traceidratio",
 		SampleRatio: 0.1,
@@ -39,7 +38,10 @@ defer provider.Shutdown(context.Background())
 ```
 
 - `Enabled: false` returns no-op providers, so the rest of the code needs no `if`.
-- Turn single signals off with `Components.Traces`, `Components.Metrics`, `Components.Logs` (`*bool`, default on).
+- Toggle signals with `Components.Traces`, `Components.Metrics`, `Components.Logs`
+  (`*bool`). Traces and metrics default to on; logs default to off.
+- The exporter uses TLS by default. Set `Insecure: true` only for a collector
+  reached over a trusted local link (sidecar, localhost); it sends plaintext.
 - If the metric exporter can't be created, startup still succeeds without
   metrics and the error goes to the global OTel error handler
   (`otel.SetErrorHandler` to route it to your logger).
@@ -61,15 +63,25 @@ func handle(ctx *fasthttp.RequestCtx) {
 }
 ```
 
-**Span names use the route template, never the raw path.** Provide the template
-in one of two ways:
+**Span names should use the route template.** Provide it in one of two ways:
 
 - `github.com/fasthttp/router` with `r.SaveMatchedRoutePath = true` — picked up automatically.
 - Any router: call `opentelemetry.SetHTTPRoute(ctx, "/users/{id}")` in the handler.
 
 With a template the span is `GET /users/{id}` and `http.route` is set. Without
-one, ID-like segments (all digits, UUIDs, 16+ hex characters) are replaced with
-`{id}` in the span name only, and `http.route` is left unset.
+one, `http.route` is left unset and the span name is a best-effort fallback:
+
+- ID-like segments (all digits, UUIDs, 16+ hex characters) are replaced with
+  `{id}`; other segments (slugs, short tokens) are kept as sent. Provide a
+  template for any endpoint with other kinds of path parameters.
+- A 404 is named after the method only (`GET`), so unmatched paths such as
+  scanner traffic don't create one span name per path.
+
+Pass only templates to `SetHTTPRoute`, never the raw path.
+
+`url.path` holds the decoded path. `url.query` holds the raw query with the
+values of credential and signature parameters (`token`, `code`, `password`,
+`api_key`, `X-Amz-Signature`, `sig`, …) replaced with `REDACTED`.
 
 Span status follows the HTTP semantic conventions: only 5xx responses mark the
 span as Error.
@@ -175,7 +187,12 @@ services emit, so check dashboards, alerts and sampling rules that key on:
    segments are replaced with `{id}` and `http.route` is not set.
 2. **4xx is no longer an error.** Server spans are Error only for 5xx; 2xx–4xx
    leave the status Unset (previously 4xx was Error and success was Ok).
-3. **`url.path` has no query string.** The query moved to `url.query`.
+   Alerts that relied on 401/403/429 spikes showing as errors should filter
+   on `http.response.status_code` instead.
+3. **`url.path` has no query string** and is the decoded, normalized path
+   (previously the raw request target). The query moved to `url.query`, with
+   sensitive parameter values redacted.
+4. **Unmatched 404s are named after the method only** (`GET`).
 
 Also in this release: metric exporter init failures are reported through
 `otel.Handle`; `SpanOp` durations keep sub-millisecond precision; a failing
