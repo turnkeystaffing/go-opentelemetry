@@ -6,6 +6,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -109,5 +110,48 @@ func TestFastHTTPMiddleware_NoTemplatablePath_SpanNameIsMethod(t *testing.T) {
 	span := serveThroughMiddleware(t, "OPTIONS", "*", func(ctx *fasthttp.RequestCtx) {})
 	if span.Name() != "OPTIONS" {
 		t.Errorf("span name = %q, want %q", span.Name(), "OPTIONS")
+	}
+}
+
+// AC-4: url.path carries only the path; the query string (which may hold
+// tokens) goes to url.query, and only when present.
+func TestFastHTTPMiddleware_URLPathExcludesQuery(t *testing.T) {
+	span := serveThroughMiddleware(t, "GET", "/users/123?token=x", func(ctx *fasthttp.RequestCtx) {})
+	if v, _ := spanAttr(span, "url.path"); v.AsString() != "/users/123" {
+		t.Errorf("url.path = %q, want /users/123", v.AsString())
+	}
+	if v, ok := spanAttr(span, "url.query"); !ok || v.AsString() != "token=x" {
+		t.Errorf("url.query = %q (set=%v), want token=x", v.AsString(), ok)
+	}
+
+	noQuery := serveThroughMiddleware(t, "GET", "/users/123", func(ctx *fasthttp.RequestCtx) {})
+	if _, ok := spanAttr(noQuery, "url.query"); ok {
+		t.Error("url.query must not be set when the request has no query")
+	}
+}
+
+// AC-5: server spans are Error only for 5xx; 4xx is the client's problem and
+// 2xx/3xx are success, so both leave the status Unset per semconv.
+func TestFastHTTPMiddleware_StatusFollowsServerSemconv(t *testing.T) {
+	tests := []struct {
+		status int
+		want   codes.Code
+	}{
+		{fasthttp.StatusOK, codes.Unset},
+		{fasthttp.StatusFound, codes.Unset},
+		{fasthttp.StatusNotFound, codes.Unset},
+		{fasthttp.StatusBadRequest, codes.Unset},
+		{fasthttp.StatusInternalServerError, codes.Error},
+		{fasthttp.StatusServiceUnavailable, codes.Error},
+	}
+	for _, tt := range tests {
+		t.Run(fasthttp.StatusMessage(tt.status), func(t *testing.T) {
+			span := serveThroughMiddleware(t, "GET", "/x", func(ctx *fasthttp.RequestCtx) {
+				ctx.SetStatusCode(tt.status)
+			})
+			if span.Status().Code != tt.want {
+				t.Errorf("status %d: span status = %v, want %v", tt.status, span.Status().Code, tt.want)
+			}
+		})
 	}
 }

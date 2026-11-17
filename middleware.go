@@ -35,13 +35,17 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(
 					semconv.HTTPRequestMethodKey.String(string(ctx.Method())),
-					semconv.URLPath(string(ctx.URI().RequestURI())),
+					semconv.URLPath(string(ctx.URI().Path())),
 					semconv.URLScheme(string(ctx.URI().Scheme())),
 					semconv.URLDomain(string(ctx.URI().Host())),
 					semconv.UserAgentOriginal(string(ctx.UserAgent())),
 				),
 			)
 			defer span.End()
+
+			if q := ctx.URI().QueryString(); len(q) > 0 {
+				span.SetAttributes(semconv.URLQuery(string(q)))
+			}
 
 			// Store the trace context in FastHTTP user values for downstream access
 			ctx.SetUserValue("traceContext", reqCtx)
@@ -90,14 +94,11 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				semconv.HTTPResponseBodySize(ctx.Response.Header.ContentLength()),
 			)
 
-			// Set span status
-			if statusCode >= 400 {
+			// Server span status per semconv: only 5xx is an error; 4xx is the
+			// client's fault and success stays Unset.
+			if statusCode >= 500 {
 				span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", statusCode))
-				if statusCode >= 500 {
-					span.RecordError(fmt.Errorf("HTTP %d: %s", statusCode, fasthttp.StatusMessage(statusCode)))
-				}
-			} else {
-				span.SetStatus(codes.Ok, "")
+				span.RecordError(fmt.Errorf("HTTP %d: %s", statusCode, fasthttp.StatusMessage(statusCode)))
 			}
 		}
 	}
