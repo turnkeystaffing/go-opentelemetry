@@ -28,7 +28,9 @@ tracker:
     grooming: needs-grooming    # team label; set when the criteria need the team, removed at start (D-57)
   create_in: backlog            # where dh-task-create puts new tickets (D-74)
   sprints:
-    on_start: add               # add to the active sprint when moving to In Progress (add | ask | none, D-74)
+    on_start: ask               # ask whether to add to the active sprint when moving to In Progress (add | ask | none, D-74)
+
+roadmap: {require_link: warn}   # switches the roadmap on (D-113); the values come from the home repo (delivery-hub) via jira_get_roadmap; never an empty "roadmap:" (dh/conventions/roadmap.md §2)
 
 scm:
   type: github
