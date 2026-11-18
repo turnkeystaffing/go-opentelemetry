@@ -50,7 +50,7 @@ func SpanOp[T any](ctx context.Context, tracer trace.Tracer, spanName string, fn
 
 	start := time.Now()
 	result, err := fn(ctx, span)
-	elapsed := float64(time.Since(start).Milliseconds())
+	elapsed := float64(time.Since(start)) / float64(time.Millisecond)
 
 	if cfg.durationHistogram != nil {
 		cfg.durationHistogram.Record(ctx, elapsed)

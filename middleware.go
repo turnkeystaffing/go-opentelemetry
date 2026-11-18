@@ -3,12 +3,14 @@ package opentelemetry
 import (
 	"context"
 	"fmt"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"net/url"
+	"strings"
 
 	"github.com/valyala/fasthttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -23,20 +25,35 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Extract trace context from incoming headers
 			reqCtx := propagator.Extract(context.Background(), &FastHTTPHeaderCarrier{ctx})
 
-			// Create span for the HTTP request
-			spanName := fmt.Sprintf("%s %s", string(ctx.Method()), string(ctx.Path()))
+			// Create span for the HTTP request. The name is "{method} {path}"
+			// with ID-like segments replaced by {id}; after routing it becomes
+			// "{method} {route}" when a route template is known, or "{method}"
+			// for an unrouted 3xx/4xx response (see below).
+			rawMethod := string(ctx.Method())
+			method := normalizeMethod(rawMethod)
+			spanName := method
+			if tmpl := templatePath(ctx); tmpl != "" {
+				spanName += " " + tmpl
+			}
 			reqCtx, span := tracer.Start(reqCtx, spanName,
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(
-					semconv.HTTPRequestMethodKey.String(string(ctx.Method())),
-					semconv.URLPath(string(ctx.URI().RequestURI())),
+					semconv.HTTPRequestMethodKey.String(method),
+					semconv.URLPath(string(ctx.URI().Path())),
 					semconv.URLScheme(string(ctx.URI().Scheme())),
 					semconv.URLDomain(string(ctx.URI().Host())),
 					semconv.UserAgentOriginal(string(ctx.UserAgent())),
-					semconv.HTTPRoute(string(ctx.Path())),
 				),
 			)
 			defer span.End()
+
+			if method != rawMethod {
+				span.SetAttributes(semconv.HTTPRequestMethodOriginal(rawMethod))
+			}
+
+			if q := ctx.URI().QueryString(); len(q) > 0 {
+				span.SetAttributes(semconv.URLQuery(redactQuery(string(q))))
+			}
 
 			// Store the trace context in FastHTTP user values for downstream access
 			ctx.SetUserValue("traceContext", reqCtx)
@@ -71,6 +88,18 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Call the next handler
 			next(ctx)
 
+			// Name the span after the route template once routing has run, so
+			// span names and http.route stay low-cardinality.
+			if route := routeFromCtx(ctx); route != "" {
+				span.SetName(method + " " + route)
+				span.SetAttributes(semconv.HTTPRoute(route))
+			} else if sc := ctx.Response.StatusCode(); sc >= 300 && sc < 500 {
+				// Unrouted redirects and client errors (404s, auth rejections
+				// before routing, 405, 429) come from arbitrary paths: name
+				// them after the method only, not one span name per path.
+				span.SetName(method)
+			}
+
 			// Set span status based on HTTP status code
 			statusCode := ctx.Response.StatusCode()
 			span.SetAttributes(
@@ -78,17 +107,172 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				semconv.HTTPResponseBodySize(ctx.Response.Header.ContentLength()),
 			)
 
-			// Set span status
-			if statusCode >= 400 {
+			// Server span status per semconv: only 5xx is an error; 4xx is the
+			// client's fault and success stays Unset.
+			if statusCode >= 500 {
 				span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", statusCode))
-				if statusCode >= 500 {
-					span.RecordError(fmt.Errorf("HTTP %d: %s", statusCode, fasthttp.StatusMessage(statusCode)))
-				}
-			} else {
-				span.SetStatus(codes.Ok, "")
+				span.RecordError(fmt.Errorf("HTTP %d: %s", statusCode, fasthttp.StatusMessage(statusCode)))
 			}
 		}
 	}
+}
+
+// httpRouteKey is the user-value key under which SetHTTPRoute stores the route template.
+type httpRouteKey struct{}
+
+// fasthttpRouterRoutePrefix is the prefix of the user-value key under which
+// github.com/fasthttp/router stores the matched route when SaveMatchedRoutePath
+// is enabled. The router randomizes the rest of the key at startup, so it is
+// matched by prefix instead of importing the router.
+const fasthttpRouterRoutePrefix = "__matchedRoutePath::"
+
+// SetHTTPRoute records the low-cardinality route template (e.g. "/users/{id}")
+// that matched the request. FastHTTPMiddleware uses it for the span name and
+// the http.route attribute. Call it from the handler or router adapter before
+// the handler returns.
+func SetHTTPRoute(ctx *fasthttp.RequestCtx, route string) {
+	ctx.SetUserValue(httpRouteKey{}, route)
+}
+
+// routeFromCtx returns the route template set by SetHTTPRoute, or else the one
+// stored by github.com/fasthttp/router, or "" when neither is present.
+func routeFromCtx(ctx *fasthttp.RequestCtx) string {
+	if route, ok := ctx.UserValue(httpRouteKey{}).(string); ok && route != "" {
+		return route
+	}
+	var route string
+	ctx.VisitUserValuesAll(func(key, value any) {
+		if route != "" {
+			return
+		}
+		if k, ok := key.(string); ok && strings.HasPrefix(k, fasthttpRouterRoutePrefix) {
+			if v, ok := value.(string); ok {
+				route = v
+			}
+		}
+	})
+	return route
+}
+
+// templatePath derives a low-cardinality span-name target from the request path
+// when no route template is known: path segments that are all digits, a UUID or
+// 16+ hex characters become "{id}"; other segments are kept. It returns "" for
+// the server-wide "OPTIONS *" target, which has no path.
+func templatePath(ctx *fasthttp.RequestCtx) string {
+	if string(ctx.Request.Header.RequestURI()) == "*" {
+		return ""
+	}
+	segments := strings.Split(string(ctx.Path()), "/")
+	for i, seg := range segments {
+		if isIDSegment(seg) {
+			segments[i] = "{id}"
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+// isIDSegment reports whether a path segment looks like an identifier.
+func isIDSegment(seg string) bool {
+	if seg == "" {
+		return false
+	}
+	if isAllDigits(seg) || isUUID(seg) {
+		return true
+	}
+	return len(seg) >= 16 && isAllHex(seg)
+}
+
+func isAllDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// isUUID reports whether s is in the canonical 8-4-4-4-12 hex form.
+func isUUID(s string) bool {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return false
+	}
+	return isAllHex(s[0:8]) && isAllHex(s[9:13]) && isAllHex(s[14:18]) && isAllHex(s[19:23]) && isAllHex(s[24:36])
+}
+
+// Query parameter names are normalized (lower-cased, "-" and "_" removed)
+// before matching, so "accessToken", "access-token" and "ACCESS_TOKEN" match
+// alike. A parameter is sensitive when its normalized name contains one of
+// sensitiveQueryParts or equals one of sensitiveQueryNames.
+var (
+	sensitiveQueryParts = []string{
+		"token", "secret", "password", "passwd", "signature", "credential",
+		"apikey", "session", "jwt",
+	}
+	sensitiveQueryNames = map[string]struct{}{
+		"key": {}, "sig": {}, "code": {}, "auth": {}, "authorization": {},
+		"pwd": {}, "otp": {}, "awsaccesskeyid": {},
+	}
+	queryKeyNormalizer = strings.NewReplacer("-", "", "_", "")
+)
+
+// isSensitiveQueryKey reports whether a decoded query parameter name holds a
+// credential or signature whose value must not be recorded.
+func isSensitiveQueryKey(name string) bool {
+	n := queryKeyNormalizer.Replace(strings.ToLower(name))
+	if _, ok := sensitiveQueryNames[n]; ok {
+		return true
+	}
+	for _, part := range sensitiveQueryParts {
+		if strings.Contains(n, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactQuery returns the raw query with the values of sensitive parameters
+// replaced by "REDACTED", keeping keys, order and other values as sent.
+func redactQuery(raw string) string {
+	parts := strings.Split(raw, "&")
+	for i, part := range parts {
+		key, value, hasValue := strings.Cut(part, "=")
+		if !hasValue || value == "" {
+			continue
+		}
+		name, err := url.QueryUnescape(key)
+		if err != nil {
+			name = key
+		}
+		if isSensitiveQueryKey(name) {
+			parts[i] = key + "=REDACTED"
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+// knownMethods are the HTTP methods recorded as-is (semconv's well-known set).
+var knownMethods = map[string]struct{}{
+	"GET": {}, "HEAD": {}, "POST": {}, "PUT": {}, "DELETE": {},
+	"CONNECT": {}, "OPTIONS": {}, "TRACE": {}, "PATCH": {},
+}
+
+// normalizeMethod returns the method, or "_OTHER" for a method outside the
+// known set, so client-chosen method tokens can't drive span-name cardinality.
+func normalizeMethod(m string) string {
+	if _, ok := knownMethods[m]; ok {
+		return m
+	}
+	return "_OTHER"
 }
 
 // FastHTTPHeaderCarrier adapts FastHTTP headers for OpenTelemetry propagation

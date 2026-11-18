@@ -3,9 +3,12 @@ package opentelemetry
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 // bufferHandler is a minimal slog.Handler that writes messages to a buffer for testing.
@@ -310,4 +313,60 @@ func TestNewMultiSlogHandler_TextFormat(t *testing.T) {
 	if handler == nil {
 		t.Fatal("handler should not be nil")
 	}
+}
+
+// failingHandler always fails and appends an attr to the record it receives,
+// to detect handlers sharing one record.
+type failingHandler struct{ err error }
+
+func (h failingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h failingHandler) Handle(_ context.Context, r slog.Record) error {
+	r.AddAttrs(slog.String("leaked", "from-failing-handler"))
+	return h.err
+}
+func (h failingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h failingHandler) WithGroup(string) slog.Handler      { return h }
+
+// recordingHandler keeps the records it receives and, like real handlers that
+// enrich records, adds an attribute to each one.
+type recordingHandler struct{ got []slog.Record }
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	r.AddAttrs(slog.String("seen_by", "recorder"))
+	h.got = append(h.got, r)
+	return nil
+}
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+// AC-9: one failing handler (e.g. stdout) must not stop the record reaching the
+// others (e.g. OTel); every failure is returned, and handlers don't share a record.
+func TestMultiHandler_FailingHandlerDoesNotBlockOthers(t *testing.T) {
+	errA := errors.New("stdout broken")
+	errB := errors.New("second failure")
+	rec := &recordingHandler{}
+	h := NewMultiHandler(failingHandler{err: errA}, rec, failingHandler{err: errB})
+
+	// More attrs than slog.Record stores inline, so copies of the record share
+	// backing storage unless each handler gets a Clone.
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)
+	for i := 0; i < 10; i++ {
+		r.AddAttrs(slog.Int(fmt.Sprintf("a%d", i), i))
+	}
+	err := h.Handle(context.Background(), r)
+
+	if len(rec.got) != 1 || rec.got[0].Message != "hello" {
+		t.Fatalf("second handler did not receive the record: %v", rec.got)
+	}
+	if !errors.Is(err, errA) || !errors.Is(err, errB) {
+		t.Errorf("returned error must contain every failure, got %v", err)
+	}
+	rec.got[0].Attrs(func(a slog.Attr) bool {
+		// slog adds a "!BUG" attr when AddAttrs is called on a shared copy.
+		if a.Key == "leaked" || strings.HasPrefix(a.Key, "!BUG") {
+			t.Errorf("record shared between handlers: saw %v", a)
+		}
+		return true
+	})
 }

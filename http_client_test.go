@@ -117,3 +117,18 @@ func TestNewInstrumentedHTTPClientWithOptions(t *testing.T) {
 
 	// The custom options are applied to the transport - detailed testing would be done in integration tests
 }
+
+// AC-7: the global tracer provider is never nil, so both constructors always
+// wrap the transport with otelhttp, whether or not InitializeProvider ran.
+func TestNewInstrumentedHTTPClient_AlwaysWrapsTransport(t *testing.T) {
+	clients := map[string]*http.Client{
+		"NewInstrumentedHTTPClient":            NewInstrumentedHTTPClient(&http.Client{}),
+		"NewInstrumentedHTTPClient(nil)":       NewInstrumentedHTTPClient(nil),
+		"NewInstrumentedHTTPClientWithOptions": NewInstrumentedHTTPClientWithOptions(&http.Client{}),
+	}
+	for name, c := range clients {
+		if _, ok := c.Transport.(*otelhttp.Transport); !ok {
+			t.Errorf("%s: transport = %T, want *otelhttp.Transport", name, c.Transport)
+		}
+	}
+}
