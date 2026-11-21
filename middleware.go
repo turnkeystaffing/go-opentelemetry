@@ -46,6 +46,18 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				),
 			)
 			defer span.End()
+			// A panicking handler skips the code after next(): set the route
+			// name and Error status, then re-panic so the server's own panic
+			// handling is unchanged. span.End (deferred above) records the
+			// exception event. No response was written, so
+			// http.response.status_code stays unset.
+			defer func() {
+				if r := recover(); r != nil {
+					applyRouteName(ctx, span, method)
+					span.SetStatus(codes.Error, fmt.Sprintf("panic: %v", r))
+					panic(r)
+				}
+			}()
 
 			if method != rawMethod {
 				span.SetAttributes(semconv.HTTPRequestMethodOriginal(rawMethod))
@@ -90,14 +102,13 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 
 			// Name the span after the route template once routing has run, so
 			// span names and http.route stay low-cardinality.
-			if route := routeFromCtx(ctx); route != "" {
-				span.SetName(method + " " + route)
-				span.SetAttributes(semconv.HTTPRoute(route))
-			} else if sc := ctx.Response.StatusCode(); sc >= 300 && sc < 500 {
-				// Unrouted redirects and client errors (404s, auth rejections
-				// before routing, 405, 429) come from arbitrary paths: name
-				// them after the method only, not one span name per path.
-				span.SetName(method)
+			// Unrouted redirects and client errors (404s, auth rejections
+			// before routing, 405, 429) come from arbitrary paths: name them
+			// after the method only, not one span name per path.
+			if !applyRouteName(ctx, span, method) {
+				if sc := ctx.Response.StatusCode(); sc >= 300 && sc < 500 {
+					span.SetName(method)
+				}
 			}
 
 			// Set span status based on HTTP status code
@@ -115,6 +126,18 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			}
 		}
 	}
+}
+
+// applyRouteName names the span "{method} {route}" and sets http.route when a
+// route template is known, and reports whether it did.
+func applyRouteName(ctx *fasthttp.RequestCtx, span trace.Span, method string) bool {
+	route := routeFromCtx(ctx)
+	if route == "" {
+		return false
+	}
+	span.SetName(method + " " + route)
+	span.SetAttributes(semconv.HTTPRoute(route))
+	return true
 }
 
 // responseBodySize returns the response body size for http.response.body.size.
