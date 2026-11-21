@@ -123,7 +123,8 @@ type httpRouteKey struct{}
 // fasthttpRouterRoutePrefix is the prefix of the user-value key under which
 // github.com/fasthttp/router stores the matched route when SaveMatchedRoutePath
 // is enabled. The router randomizes the rest of the key at startup, so it is
-// matched by prefix instead of importing the router.
+// matched by prefix instead of importing the router. Checked against
+// fasthttp/router v1.5.4; if the format changes, spans fall back to templatePath.
 const fasthttpRouterRoutePrefix = "__matchedRoutePath::"
 
 // SetHTTPRoute records the low-cardinality route template (e.g. "/users/{id}")

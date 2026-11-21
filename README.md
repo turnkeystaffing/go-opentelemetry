@@ -113,9 +113,10 @@ resp, err := client.Do(req) // client span + traceparent header
 `NewInstrumentedHTTPClientWithOptions` accepts `otelhttp.Option`s. For non-`net/http`
 clients, `InjectTraceHeaders(ctx, headers)` fills a `map[string]string`.
 
-Client spans record the full outbound URL (`url.full`). otelhttp redacts only a
-few signature parameters there, so don't put credentials such as `api_key` or
-`token` in outbound query strings; send them in headers.
+Client spans record the full outbound URL (`url.full`). otelhttp (v0.67.0) strips
+only user:password from it and does not redact the query string, so don't put
+credentials such as `api_key` or `token` in outbound query strings; send them in
+headers.
 
 ## Logging (slog)
 
