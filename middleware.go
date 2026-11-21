@@ -1,6 +1,7 @@
 package opentelemetry
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -157,9 +158,11 @@ func routeFromCtx(ctx *fasthttp.RequestCtx) string {
 // templatePath derives a low-cardinality span-name target from the request path
 // when no route template is known: path segments that are all digits, a UUID or
 // 16+ hex characters become "{id}"; other segments are kept. It returns "" for
-// the server-wide "OPTIONS *" target, which has no path.
+// targets that have no path: the server-wide "OPTIONS *" and the CONNECT
+// authority form ("host:port"), which fasthttp would turn into "/host:port".
 func templatePath(ctx *fasthttp.RequestCtx) string {
-	if string(ctx.Request.Header.RequestURI()) == "*" {
+	target := ctx.Request.Header.RequestURI()
+	if string(target) == "*" || ctx.IsConnect() && !bytes.HasPrefix(target, []byte("/")) {
 		return ""
 	}
 	segments := strings.Split(string(ctx.Path()), "/")

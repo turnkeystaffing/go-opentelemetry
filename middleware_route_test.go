@@ -111,6 +111,17 @@ func TestFastHTTPMiddleware_NoTemplatablePath_SpanNameIsMethod(t *testing.T) {
 	if span.Name() != "OPTIONS" {
 		t.Errorf("span name = %q, want %q", span.Name(), "OPTIONS")
 	}
+
+	// CONNECT uses the authority form ("host:port"), which is not a path;
+	// fasthttp normalizes it to "/host:port", so it must not reach the name.
+	for _, status := range []int{fasthttp.StatusOK, fasthttp.StatusBadGateway} {
+		span := serveThroughMiddleware(t, "CONNECT", "example.com:443", func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(status)
+		})
+		if span.Name() != "CONNECT" {
+			t.Errorf("status %d: span name = %q, want %q", status, span.Name(), "CONNECT")
+		}
+	}
 }
 
 // AC-4: url.path carries only the path; the query string (which may hold
