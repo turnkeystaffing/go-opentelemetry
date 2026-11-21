@@ -85,6 +85,8 @@ func TestFastHTTPMiddleware_NoRoute_TemplatesIDSegmentsInSpanName(t *testing.T) 
 		{"uuid", "/orders/3f2b8c1e-9a4d-4e2b-8c3a-1f2e3d4c5b6a/items", "GET /orders/{id}/items"},
 		{"uppercase uuid", "/orders/3F2B8C1E-9A4D-4E2B-8C3A-1F2E3D4C5B6A", "GET /orders/{id}"},
 		{"16+ hex chars", "/blobs/deadbeefcafebabe0123", "GET /blobs/{id}"},
+		{"exactly 16 hex chars", "/blobs/deadbeefcafebabe", "GET /blobs/{id}"},
+		{"uuid-shaped with non-hex kept", "/orders/3f2b8c1e-9a4d-4e2b-8c3a-1f2e3d4c5bzz", "GET /orders/3f2b8c1e-9a4d-4e2b-8c3a-1f2e3d4c5bzz"},
 		{"several ids", "/users/7/posts/99", "GET /users/{id}/posts/{id}"},
 		{"slug kept", "/users/john-smith", "GET /users/john-smith"},
 		{"short hex word kept", "/api/v1/facade", "GET /api/v1/facade"},
