@@ -211,6 +211,7 @@ func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
 		{"gcs and azure sig", "X-Goog-Signature=a&sig=b&Signature=c&AWSAccessKeyId=d", "X-Goog-Signature=REDACTED&sig=REDACTED&Signature=REDACTED&AWSAccessKeyId=REDACTED"},
 		{"api key and password", "api_key=k&apikey=k2&password=p&client_secret=s", "api_key=REDACTED&apikey=REDACTED&password=REDACTED&client_secret=REDACTED"},
 		{"percent-encoded key", "acc%65ss_token=abc", "acc%65ss_token=REDACTED"},
+		{"malformed escape in key", "to%6ben%=secret", "to%6ben%=REDACTED"},
 		{"key without value kept", "token&debug", "token&debug"},
 		{"empty value kept", "token=", "token="},
 		{"repeated sensitive key", "token=a&token=b", "token=REDACTED&token=REDACTED"},

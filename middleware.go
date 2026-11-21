@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/valyala/fasthttp"
@@ -252,10 +251,9 @@ func redactQuery(raw string) string {
 		if !hasValue || value == "" {
 			continue
 		}
-		name, err := url.QueryUnescape(key)
-		if err != nil {
-			name = key
-		}
+		// Decode the name the way fasthttp does for the handler (lenient:
+		// malformed escapes are kept), so a bad escape can't skip redaction.
+		name := string(fasthttp.AppendUnquotedArg(nil, []byte(key)))
 		if isSensitiveQueryKey(name) {
 			parts[i] = key + "=REDACTED"
 		}
