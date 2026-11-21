@@ -215,6 +215,10 @@ services emit, so check dashboards, alerts and sampling rules that key on:
    sensitive parameter values redacted.
 4. **Unrouted 3xx/4xx responses are named after the method only** (`GET`),
    and non-standard methods are recorded as `_OTHER`.
+5. **`http.response.body.size` is the real body size** (it was usually 0, and
+   -1 for chunked streams; chunked streams now leave it out).
+6. **A panicking handler marks the span Error** and names it after the route;
+   the panic still propagates.
 
 Also in this release: metric exporter init failures are reported through
 `otel.Handle`; `SpanOp` durations keep sub-millisecond precision; a failing
