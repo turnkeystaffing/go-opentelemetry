@@ -102,10 +102,10 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 
 			// Set span status based on HTTP status code
 			statusCode := ctx.Response.StatusCode()
-			span.SetAttributes(
-				semconv.HTTPResponseStatusCode(statusCode),
-				semconv.HTTPResponseBodySize(ctx.Response.Header.ContentLength()),
-			)
+			span.SetAttributes(semconv.HTTPResponseStatusCode(statusCode))
+			if size, ok := responseBodySize(&ctx.Response); ok {
+				span.SetAttributes(semconv.HTTPResponseBodySize(size))
+			}
 
 			// Server span status per semconv: only 5xx is an error; 4xx is the
 			// client's fault and success stays Unset.
@@ -115,6 +115,21 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			}
 		}
 	}
+}
+
+// responseBodySize returns the response body size for http.response.body.size.
+// SetBody doesn't update the Content-Length header until the response is
+// written, so a buffered body is measured directly. A streamed body is not
+// read (that would drain it): its declared Content-Length is used, and the
+// size is unknown (ok == false) when the stream is chunked.
+func responseBodySize(resp *fasthttp.Response) (int, bool) {
+	if !resp.IsBodyStream() {
+		return len(resp.Body()), true
+	}
+	if n := resp.Header.ContentLength(); n >= 0 {
+		return n, true
+	}
+	return 0, false
 }
 
 // httpRouteKey is the user-value key under which SetHTTPRoute stores the route template.
