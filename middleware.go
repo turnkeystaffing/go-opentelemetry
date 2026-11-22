@@ -39,13 +39,18 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(
 					semconv.HTTPRequestMethodKey.String(method),
-					semconv.URLPath(string(ctx.URI().Path())),
 					semconv.URLScheme(string(ctx.URI().Scheme())),
 					semconv.URLDomain(string(ctx.URI().Host())),
 					semconv.UserAgentOriginal(string(ctx.UserAgent())),
 				),
 			)
 			defer span.End()
+
+			// A target without a path ("OPTIONS *", CONNECT host:port) records
+			// no url.path, not the "/*" or "/host:port" fasthttp derives.
+			if targetHasPath(ctx) {
+				span.SetAttributes(semconv.URLPath(string(ctx.URI().Path())))
+			}
 			// A panicking handler skips the code after next(): set the route
 			// name and Error status, then re-panic so the server's own panic
 			// handling is unchanged. span.End (deferred above) records the
@@ -208,11 +213,9 @@ func routeFromCtx(ctx *fasthttp.RequestCtx) string {
 // templatePath derives a low-cardinality span-name target from the request path
 // when no route template is known: path segments that are all digits, a UUID or
 // 16+ hex characters become "{id}"; other segments are kept. It returns "" for
-// targets that have no path: the server-wide "OPTIONS *" and the CONNECT
-// authority form ("host:port"), which fasthttp would turn into "/host:port".
+// targets that have no path (see targetHasPath).
 func templatePath(ctx *fasthttp.RequestCtx) string {
-	target := ctx.Request.Header.RequestURI()
-	if string(target) == "*" || ctx.IsConnect() && !bytes.HasPrefix(target, []byte("/")) {
+	if !targetHasPath(ctx) {
 		return ""
 	}
 	segments := strings.Split(string(ctx.Path()), "/")
@@ -222,6 +225,14 @@ func templatePath(ctx *fasthttp.RequestCtx) string {
 		}
 	}
 	return strings.Join(segments, "/")
+}
+
+// targetHasPath reports whether the request target has a path: false for the
+// server-wide "OPTIONS *" and the CONNECT authority form ("host:port"), which
+// fasthttp would turn into "/*" and "/host:port".
+func targetHasPath(ctx *fasthttp.RequestCtx) bool {
+	target := ctx.Request.Header.RequestURI()
+	return string(target) != "*" && !(ctx.IsConnect() && !bytes.HasPrefix(target, []byte("/")))
 }
 
 // isIDSegment reports whether a path segment looks like an identifier.

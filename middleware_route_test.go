@@ -126,6 +126,22 @@ func TestFastHTTPMiddleware_NoTemplatablePath_SpanNameIsMethod(t *testing.T) {
 	}
 }
 
+// AC-3/AC-4: a target that has no path (asterisk form, CONNECT authority
+// form) records no url.path rather than the "/*" or "/host:port" fasthttp
+// derives; an absolute-form or origin-form CONNECT target keeps its path.
+func TestFastHTTPMiddleware_TargetWithoutPath_NoURLPath(t *testing.T) {
+	for _, tt := range []struct{ method, uri string }{{"OPTIONS", "*"}, {"CONNECT", "example.com:443"}} {
+		span := serveThroughMiddleware(t, tt.method, tt.uri, func(ctx *fasthttp.RequestCtx) {})
+		if v, ok := spanAttr(span, "url.path"); ok {
+			t.Errorf("%s %s: url.path must not be set, got %q", tt.method, tt.uri, v.AsString())
+		}
+	}
+	withPath := serveThroughMiddleware(t, "CONNECT", "/tunnel", func(ctx *fasthttp.RequestCtx) {})
+	if v, _ := spanAttr(withPath, "url.path"); v.AsString() != "/tunnel" {
+		t.Errorf("CONNECT /tunnel: url.path = %q, want /tunnel", v.AsString())
+	}
+}
+
 // AC-4: url.path carries only the path; the query string (which may hold
 // tokens) goes to url.query, and only when present.
 func TestFastHTTPMiddleware_URLPathExcludesQuery(t *testing.T) {
