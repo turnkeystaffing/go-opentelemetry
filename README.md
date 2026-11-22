@@ -93,7 +93,9 @@ the final name is set when the handler returns.
 Pass only templates to `SetHTTPRoute`, never the raw path.
 
 `url.path` holds the decoded path; it is not set for targets without a path
-(`OPTIONS *`, `CONNECT host:port`). `url.query` holds the raw query with the
+(`OPTIONS *`, `CONNECT host:port`). Invalid UTF-8 in the path or host is
+replaced with `�`, `url.domain` is cut to 255 characters and `url.path`
+(and the path in the span name) to 1024. `url.query` holds the raw query with the
 values of credential and signature parameters replaced with `REDACTED`. Names
 are compared lower-cased with `-` and `_` removed; a parameter is redacted when
 its name contains `token`, `secret`, `password`, `passwd`, `signature`,
@@ -222,8 +224,12 @@ services emit, so check dashboards, alerts and sampling rules that key on:
    and 304 responses report 0, since no body is sent.
 6. **A panicking handler marks the span Error** and names it after the route;
    the panic still propagates.
+7. **Invalid UTF-8 is replaced and long values are cut:** `url.domain` to 255
+   characters, `url.path` and the span-name path to 1024.
 
 Also in this release: metric exporter init failures are reported through
-`otel.Handle`; `SpanOp` durations keep sub-millisecond precision; a failing
+`otel.Handle`; if the log provider can't be created, `InitializeProvider`
+shuts down the providers it already started and leaves the OTel globals as
+they were; `SpanOp` durations keep sub-millisecond precision; a failing
 slog handler no longer stops records reaching the others; the resource uses
 semconv v1.26.0 (attribute keys unchanged).
