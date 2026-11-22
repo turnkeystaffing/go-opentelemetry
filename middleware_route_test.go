@@ -211,6 +211,15 @@ func TestFastHTTPMiddleware_NotFoundWithoutRoute_SpanNameIsMethod(t *testing.T) 
 	if routed.Name() != "GET /users/{id}" {
 		t.Errorf("routed 404 span name = %q, want %q", routed.Name(), "GET /users/{id}")
 	}
+
+	// A 405 from a matched route keeps the route name too.
+	routed405 := serveThroughMiddleware(t, "POST", "/users/123", func(ctx *fasthttp.RequestCtx) {
+		SetHTTPRoute(ctx, "/users/{id}")
+		ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+	})
+	if routed405.Name() != "POST /users/{id}" {
+		t.Errorf("routed 405 span name = %q, want %q", routed405.Name(), "POST /users/{id}")
+	}
 }
 
 // AC-15: values of sensitive query parameters are replaced with REDACTED in
@@ -237,7 +246,15 @@ func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
 		{"remaining listed keys", "refresh_token=a&id_token=b&X-Amz-Credential=c&X-Amz-Security-Token=d&auth=e&authorization=f&passwd=g&secret=h", "refresh_token=REDACTED&id_token=REDACTED&X-Amz-Credential=REDACTED&X-Amz-Security-Token=REDACTED&auth=REDACTED&authorization=REDACTED&passwd=REDACTED&secret=REDACTED"},
 		{"exact short keys", "key=AIza&pwd=p&otp=1&code=c", "key=REDACTED&pwd=REDACTED&otp=REDACTED&code=REDACTED"},
 		{"session and jwt", "sessionId=s&jwt=j", "sessionId=REDACTED&jwt=REDACTED"},
-		{"lookalikes kept", "keyword=go&monkey=1&zipcode=94016&author=me&design=x", "keyword=go&monkey=1&zipcode=94016&author=me&design=x"},
+		{"names ending in key", "access_key=a&private_key=b&subscription-key=c&ClientKey=d", "access_key=REDACTED&private_key=REDACTED&subscription-key=REDACTED&ClientKey=REDACTED"},
+		{"assertion and saml", "client_assertion=a&SAMLResponse=b&jwt_assertion_type=c", "client_assertion=REDACTED&SAMLResponse=REDACTED&jwt_assertion_type=REDACTED"},
+		{"ticket exact only", "ticket=t&ticket_id=42&Ticket=T", "ticket=REDACTED&ticket_id=42&Ticket=REDACTED"},
+		{"ticket after normalizing", "TICKET=a&ticket_=b&tic-ket=c", "TICKET=REDACTED&ticket_=REDACTED&tic-ket=REDACTED"},
+		// The suffix is checked on the normalized name, so trailing "-"/"_" don't hide it.
+		{"key suffix after normalizing", "access_key_=a&Private-Key-=b", "access_key_=REDACTED&Private-Key-=REDACTED"},
+		// "monkey" ends in "key", so it is redacted (accepted side effect).
+		{"key suffix side effect", "monkey=1&keyword=go", "monkey=REDACTED&keyword=go"},
+		{"lookalikes kept", "keyword=go&keys=a,b&zipcode=94016&author=me&design=x&tickets=3", "keyword=go&keys=a,b&zipcode=94016&author=me&design=x&tickets=3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -271,20 +288,24 @@ func TestFastHTTPMiddleware_RouteSourcePrecedence(t *testing.T) {
 	}
 }
 
-// AC-14: without a route template, any 3xx or 4xx response (auth middleware
-// rejecting before routing, 405, 429, router redirects) is named after the
-// method only; 2xx and 5xx keep the templated-path fallback.
-func TestFastHTTPMiddleware_UnroutedRedirectOrClientError_SpanNameIsMethod(t *testing.T) {
+// AC-14: without a route template, only 404 and 405 are named after the
+// method only; every other status keeps the AC-2 path-derived name.
+func TestFastHTTPMiddleware_UnroutedNotFoundOrMethodNotAllowed_SpanNameIsMethod(t *testing.T) {
 	tests := []struct {
 		status int
 		want   string
 	}{
-		{fasthttp.StatusMovedPermanently, "GET"},
-		{fasthttp.StatusPermanentRedirect, "GET"},
-		{fasthttp.StatusUnauthorized, "GET"},
-		{fasthttp.StatusForbidden, "GET"},
+		// Only "no such route" answers are named after the method only.
+		{fasthttp.StatusNotFound, "GET"},
 		{fasthttp.StatusMethodNotAllowed, "GET"},
-		{fasthttp.StatusTooManyRequests, "GET"},
+		// Every other unrouted status keeps the AC-2 path-derived name, so a
+		// service without routes still sees which endpoint returns it.
+		{fasthttp.StatusMovedPermanently, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusPermanentRedirect, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusBadRequest, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusUnauthorized, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusForbidden, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusTooManyRequests, "GET /wp-admin/x7f9q"},
 		{fasthttp.StatusOK, "GET /wp-admin/x7f9q"},
 		{fasthttp.StatusInternalServerError, "GET /wp-admin/x7f9q"},
 	}

@@ -28,7 +28,7 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Create span for the HTTP request. The name is "{method} {path}"
 			// with ID-like segments replaced by {id}; after routing it becomes
 			// "{method} {route}" when a route template is known, or "{method}"
-			// for an unrouted 3xx/4xx response (see below).
+			// for an unrouted 404/405 response (see below).
 			rawMethod := string(ctx.Method())
 			method := normalizeMethod(rawMethod)
 			spanName := method
@@ -109,11 +109,15 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 
 			// Name the span after the route template once routing has run, so
 			// span names and http.route stay low-cardinality.
-			// Unrouted redirects and client errors (404s, auth rejections
-			// before routing, 405, 429) come from arbitrary paths: name them
-			// after the method only, not one span name per path.
+			// A 404 or 405 with no route template recorded (usually: no route
+			// matched) comes from arbitrary paths such as scanners and typos,
+			// so name it after the method only, not one span name per path.
+			// This also applies to a handler that answers 404 itself without
+			// SetHTTPRoute. Other statuses without a template (redirects, 400,
+			// 401/403, 429) keep the path-derived name, so a service without
+			// routes still sees which endpoint returns them.
 			if !applyRouteName(ctx, span, method) {
-				if sc := ctx.Response.StatusCode(); sc >= 300 && sc < 500 {
+				if sc := ctx.Response.StatusCode(); sc == fasthttp.StatusNotFound || sc == fasthttp.StatusMethodNotAllowed {
 					span.SetName(method)
 				}
 			}
@@ -300,15 +304,18 @@ func isUUID(s string) bool {
 // Query parameter names are normalized (lower-cased, "-" and "_" removed)
 // before matching, so "accessToken", "access-token" and "ACCESS_TOKEN" match
 // alike. A parameter is sensitive when its normalized name contains one of
-// sensitiveQueryParts or equals one of sensitiveQueryNames.
+// sensitiveQueryParts, ends with sensitiveQuerySuffix ("access_key",
+// "subscription-key"; "monkey" too, an accepted side effect) or equals one of
+// sensitiveQueryNames ("ticket" is exact so "ticket_id" stays readable).
 var (
 	sensitiveQueryParts = []string{
 		"token", "secret", "password", "passwd", "signature", "credential",
-		"apikey", "session", "jwt",
+		"apikey", "session", "jwt", "assertion", "samlresponse",
 	}
-	sensitiveQueryNames = map[string]struct{}{
-		"key": {}, "sig": {}, "code": {}, "auth": {}, "authorization": {},
-		"pwd": {}, "otp": {}, "awsaccesskeyid": {},
+	sensitiveQuerySuffix = "key"
+	sensitiveQueryNames  = map[string]struct{}{
+		"sig": {}, "code": {}, "auth": {}, "authorization": {},
+		"pwd": {}, "otp": {}, "awsaccesskeyid": {}, "ticket": {},
 	}
 	queryKeyNormalizer = strings.NewReplacer("-", "", "_", "")
 )
@@ -317,7 +324,7 @@ var (
 // credential or signature whose value must not be recorded.
 func isSensitiveQueryKey(name string) bool {
 	n := queryKeyNormalizer.Replace(strings.ToLower(name))
-	if _, ok := sensitiveQueryNames[n]; ok {
+	if _, ok := sensitiveQueryNames[n]; ok || strings.HasSuffix(n, sensitiveQuerySuffix) {
 		return true
 	}
 	for _, part := range sensitiveQueryParts {

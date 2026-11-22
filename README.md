@@ -79,9 +79,11 @@ one, `http.route` is left unset and the span name is a best-effort fallback:
 - ID-like segments (all digits, UUIDs, 16+ hex characters) are replaced with
   `{id}`; other segments (slugs, short tokens) are kept as sent. Provide a
   template for any endpoint with other kinds of path parameters.
-- A 3xx or 4xx response (404, 401/403 from auth middleware before routing,
-  405, 429, redirects) is named after the method only (`GET`), so unmatched
-  paths such as scanner traffic don't create one span name per path.
+- A 404 or 405 response with no route template recorded is named after the
+  method only (`GET`), so unmatched paths such as scanner traffic don't create
+  one span name per path. This includes a handler that answers 404 itself
+  without calling `SetHTTPRoute`. Other statuses (redirects, 400, 401/403,
+  429) keep the path-derived name.
 
 Methods outside GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE and PATCH
 are recorded as `_OTHER` (span name and `http.request.method`), with the
@@ -99,8 +101,10 @@ replaced with `�`, `url.domain` is cut to 255 characters and `url.path`
 values of credential and signature parameters replaced with `REDACTED`. Names
 are compared lower-cased with `-` and `_` removed; a parameter is redacted when
 its name contains `token`, `secret`, `password`, `passwd`, `signature`,
-`credential`, `apikey`, `session` or `jwt`, or is `key`, `sig`, `code`, `auth`,
-`authorization`, `pwd`, `otp` or `AWSAccessKeyId`.
+`credential`, `apikey`, `session`, `jwt`, `assertion` or `samlresponse`, ends
+with `key` (`access_key`, `subscription-key`; also `monkey`), or is `sig`,
+`code`, `auth`, `authorization`, `pwd`, `otp`, `AWSAccessKeyId` or `ticket`
+(exact, so `ticket_id` stays readable).
 
 Span status follows the HTTP semantic conventions: only 5xx responses mark the
 span as Error.
@@ -199,6 +203,20 @@ oteltest.SetGlobalMeterProvider(t, mp)
 rm := oteltest.CollectMetrics(t, reader)
 oteltest.AssertHistogramRecorded(t, rm, "orders.create.duration")
 ```
+
+## Telemetry changes in v0.7.1
+
+Upgrade from v0.6.x straight to v0.7.1. Compared with v0.7.0:
+
+1. **Only unrouted 404/405 responses are named after the method only**
+   (`GET`). Redirects, 400, 401/403 and 429 without a recorded route template
+   are named after the path again (with `{id}` templating), as before v0.7.0.
+   Services that put auth or rate limiting in front of the router see their
+   401/403/429 per path; scanner traffic hitting those can add span names.
+2. **More query parameters are redacted in `url.query`:** names that end in
+   `key` once `-` and `_` are removed (`access_key`, `subscription-key`, and
+   also `monkey` or `sort_key`), names containing `assertion` or
+   `samlresponse`, and `ticket` (exact, so `ticket_id` stays readable).
 
 ## Telemetry changes in v0.7.0
 
