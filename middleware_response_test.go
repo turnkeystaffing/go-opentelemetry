@@ -110,6 +110,10 @@ func TestFastHTTPMiddleware_HandlerPanic_RecordedAndRepanicked(t *testing.T) {
 	if span.Status().Code != codes.Error {
 		t.Errorf("status = %v, want Error", span.Status().Code)
 	}
+	// The panic value goes only into the exception event, not the status text.
+	if d := span.Status().Description; d != "handler panicked" {
+		t.Errorf("status description = %q, want %q", d, "handler panicked")
+	}
 	if _, ok := spanAttr(span, "http.response.status_code"); ok {
 		t.Error("http.response.status_code must not be set: no response was written")
 	}

@@ -54,12 +54,14 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// A panicking handler skips the code after next(): set the route
 			// name and Error status, then re-panic so the server's own panic
 			// handling is unchanged. span.End (deferred above) records the
-			// exception event. No response was written, so
-			// http.response.status_code stays unset.
+			// exception event with the panic value. Whatever status or body
+			// the handler set before panicking is not the final response
+			// (that is decided by whoever recovers the panic), so
+			// http.response.status_code and body size are not recorded.
 			defer func() {
 				if r := recover(); r != nil {
 					applyRouteName(ctx, span, method)
-					span.SetStatus(codes.Error, fmt.Sprintf("panic: %v", r))
+					span.SetStatus(codes.Error, "handler panicked")
 					panic(r)
 				}
 			}()
