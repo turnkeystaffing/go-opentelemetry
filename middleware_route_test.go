@@ -211,6 +211,15 @@ func TestFastHTTPMiddleware_NotFoundWithoutRoute_SpanNameIsMethod(t *testing.T) 
 	if routed.Name() != "GET /users/{id}" {
 		t.Errorf("routed 404 span name = %q, want %q", routed.Name(), "GET /users/{id}")
 	}
+
+	// A 405 from a matched route keeps the route name too.
+	routed405 := serveThroughMiddleware(t, "POST", "/users/123", func(ctx *fasthttp.RequestCtx) {
+		SetHTTPRoute(ctx, "/users/{id}")
+		ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+	})
+	if routed405.Name() != "POST /users/{id}" {
+		t.Errorf("routed 405 span name = %q, want %q", routed405.Name(), "POST /users/{id}")
+	}
 }
 
 // AC-15: values of sensitive query parameters are replaced with REDACTED in
@@ -240,6 +249,9 @@ func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
 		{"names ending in key", "access_key=a&private_key=b&subscription-key=c&ClientKey=d", "access_key=REDACTED&private_key=REDACTED&subscription-key=REDACTED&ClientKey=REDACTED"},
 		{"assertion and saml", "client_assertion=a&SAMLResponse=b&jwt_assertion_type=c", "client_assertion=REDACTED&SAMLResponse=REDACTED&jwt_assertion_type=REDACTED"},
 		{"ticket exact only", "ticket=t&ticket_id=42&Ticket=T", "ticket=REDACTED&ticket_id=42&Ticket=REDACTED"},
+		{"ticket after normalizing", "TICKET=a&ticket_=b&tic-ket=c", "TICKET=REDACTED&ticket_=REDACTED&tic-ket=REDACTED"},
+		// The suffix is checked on the normalized name, so trailing "-"/"_" don't hide it.
+		{"key suffix after normalizing", "access_key_=a&Private-Key-=b", "access_key_=REDACTED&Private-Key-=REDACTED"},
 		// "monkey" ends in "key", so it is redacted (accepted side effect).
 		{"key suffix side effect", "monkey=1&keyword=go", "monkey=REDACTED&keyword=go"},
 		{"lookalikes kept", "keyword=go&keys=a,b&zipcode=94016&author=me&design=x&tickets=3", "keyword=go&keys=a,b&zipcode=94016&author=me&design=x&tickets=3"},
