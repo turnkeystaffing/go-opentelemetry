@@ -312,7 +312,7 @@ var (
 	}
 	sensitiveQuerySuffix = "key"
 	sensitiveQueryNames  = map[string]struct{}{
-		"key": {}, "sig": {}, "code": {}, "auth": {}, "authorization": {},
+		"sig": {}, "code": {}, "auth": {}, "authorization": {},
 		"pwd": {}, "otp": {}, "awsaccesskeyid": {}, "ticket": {},
 	}
 	queryKeyNormalizer = strings.NewReplacer("-", "", "_", "")
