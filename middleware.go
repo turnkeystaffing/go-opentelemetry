@@ -191,14 +191,26 @@ const fasthttpRouterRoutePrefix = "__matchedRoutePath::"
 // SetHTTPRoute records the low-cardinality route template (e.g. "/users/{id}")
 // that matched the request. FastHTTPMiddleware uses it for the span name and
 // the http.route attribute. Call it from the handler or router adapter before
-// the handler returns.
+// the handler returns. Parameters may carry router syntax such as regex
+// constraints ("{id:[0-9]+}"); they are recorded by name only ("{id}").
 func SetHTTPRoute(ctx *fasthttp.RequestCtx, route string) {
 	ctx.SetUserValue(httpRouteKey{}, route)
 }
 
 // routeFromCtx returns the route template set by SetHTTPRoute, or else the one
-// stored by github.com/fasthttp/router, or "" when neither is present.
+// stored by github.com/fasthttp/router, or "" when neither is present. Either
+// way the template is tidied (tidyRoute) and held to the path rules (valid
+// UTF-8, at most maxPathLen characters), so every source is named alike.
 func routeFromCtx(ctx *fasthttp.RequestCtx) string {
+	if route := rawRouteFromCtx(ctx); route != "" {
+		return cleanValue(tidyRoute(route), maxPathLen)
+	}
+	return ""
+}
+
+// rawRouteFromCtx returns the route template exactly as SetHTTPRoute or
+// github.com/fasthttp/router recorded it.
+func rawRouteFromCtx(ctx *fasthttp.RequestCtx) string {
 	if route, ok := ctx.UserValue(httpRouteKey{}).(string); ok && route != "" {
 		return route
 	}
@@ -214,6 +226,72 @@ func routeFromCtx(ctx *fasthttp.RequestCtx) string {
 		}
 	})
 	return route
+}
+
+// tidyRoute reduces each "{name...}" parameter of a route template to
+// "{name}", dropping regex constraints and markers that routers put inside
+// the braces: "{id:[0-9a-f]{8}-...}" -> "{id}", "{page?}" -> "{page}",
+// "{filepath:*}" -> "{filepath}". Braces are matched by depth (a regex may
+// contain its own "{8}") and "\" escapes the next character. Text outside
+// braces is kept, so "/health" and ":id"-style routes are unchanged. A route
+// whose braces don't balance, or with a parameter whose name isn't a plain
+// name (isRouteParamName), is returned as is rather than guessed at.
+func tidyRoute(route string) string {
+	if !strings.Contains(route, "{") {
+		return route
+	}
+	var b strings.Builder
+	for i := 0; i < len(route); {
+		if route[i] != '{' {
+			b.WriteByte(route[i])
+			i++
+			continue
+		}
+		depth, end := 0, -1
+	scan:
+		for j := i; j < len(route); j++ {
+			switch route[j] {
+			case '\\':
+				j++ // skip the escaped character
+			case '{':
+				depth++
+			case '}':
+				if depth--; depth == 0 {
+					end = j
+					break scan
+				}
+			}
+		}
+		if end < 0 {
+			return route // unbalanced braces: keep the route as written
+		}
+		name := route[i+1 : end]
+		if k := strings.IndexAny(name, ":?"); k >= 0 {
+			name = name[:k]
+		}
+		name = strings.TrimSpace(name)
+		if !isRouteParamName(name) {
+			return route // not a parameter we understand: keep the route as written
+		}
+		b.WriteString("{" + name + "}")
+		i = end + 1
+	}
+	return b.String()
+}
+
+// isRouteParamName reports whether s is a plain parameter name: one or more
+// ASCII letters, digits, '_', '-' or '.'.
+func isRouteParamName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // templatePath derives a low-cardinality span-name target from the request path
