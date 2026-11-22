@@ -40,7 +40,7 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 				trace.WithAttributes(
 					semconv.HTTPRequestMethodKey.String(method),
 					semconv.URLScheme(string(ctx.URI().Scheme())),
-					semconv.URLDomain(string(ctx.URI().Host())),
+					semconv.URLDomain(cleanValue(string(ctx.URI().Host()), maxDomainLen)),
 					semconv.UserAgentOriginal(string(ctx.UserAgent())),
 				),
 			)
@@ -49,7 +49,7 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// A target without a path ("OPTIONS *", CONNECT host:port) records
 			// no url.path, not the "/*" or "/host:port" fasthttp derives.
 			if targetHasPath(ctx) {
-				span.SetAttributes(semconv.URLPath(string(ctx.URI().Path())))
+				span.SetAttributes(semconv.URLPath(cleanValue(string(ctx.URI().Path()), maxPathLen)))
 			}
 			// A panicking handler skips the code after next(): set the route
 			// name and Error status, then re-panic so the server's own panic
@@ -226,7 +226,29 @@ func templatePath(ctx *fasthttp.RequestCtx) string {
 			segments[i] = "{id}"
 		}
 	}
-	return strings.Join(segments, "/")
+	return cleanValue(strings.Join(segments, "/"), maxPathLen)
+}
+
+// Client-controlled values are capped before they are recorded, so one
+// request can't make a span arbitrarily large: 255 characters is the longest
+// valid DNS name, and 1024 is ample for a real path.
+const (
+	maxDomainLen = 255
+	maxPathLen   = 1024
+)
+
+// cleanValue replaces invalid UTF-8 with U+FFFD and cuts s to at most max
+// characters, never splitting a multi-byte character.
+func cleanValue(s string, max int) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
 }
 
 // targetHasPath reports whether the request target has a path: false for the
