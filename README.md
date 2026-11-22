@@ -92,7 +92,8 @@ the final name is set when the handler returns.
 
 Pass only templates to `SetHTTPRoute`, never the raw path.
 
-`url.path` holds the decoded path. `url.query` holds the raw query with the
+`url.path` holds the decoded path; it is not set for targets without a path
+(`OPTIONS *`, `CONNECT host:port`). `url.query` holds the raw query with the
 values of credential and signature parameters replaced with `REDACTED`. Names
 are compared lower-cased with `-` and `_` removed; a parameter is redacted when
 its name contains `token`, `secret`, `password`, `passwd`, `signature`,
@@ -211,12 +212,14 @@ services emit, so check dashboards, alerts and sampling rules that key on:
    Alerts that relied on 401/403/429 spikes showing as errors should filter
    on `http.response.status_code` instead.
 3. **`url.path` has no query string** and is the decoded, normalized path
-   (previously the raw request target). The query moved to `url.query`, with
-   sensitive parameter values redacted.
+   (previously the raw request target), and is not set for `OPTIONS *` or
+   `CONNECT host:port`. The query moved to `url.query`, with sensitive
+   parameter values redacted.
 4. **Unrouted 3xx/4xx responses are named after the method only** (`GET`),
    and non-standard methods are recorded as `_OTHER`.
 5. **`http.response.body.size` is the real body size** (it was usually 0, and
-   -1 for chunked streams; chunked streams now leave it out).
+   -1 for chunked streams; chunked streams now leave it out). HEAD, 1xx, 204
+   and 304 responses report 0, since no body is sent.
 6. **A panicking handler marks the span Error** and names it after the route;
    the panic still propagates.
 
