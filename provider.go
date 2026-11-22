@@ -2,6 +2,7 @@ package opentelemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -142,7 +143,6 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		}
 		tracerProvider = tp
 		shutdownFuncs = append(shutdownFuncs, traceShutdown)
-		otel.SetTracerProvider(tracerProvider)
 		tracer = tracerProvider.Tracer(cfg.ServiceName)
 	} else {
 		tracerProvider = sdktrace.NewTracerProvider()
@@ -152,6 +152,7 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	// Initialize metrics provider conditionally
 	var meterProvider *sdkmetric.MeterProvider
 	var meter metric.Meter
+	metricsStarted := false
 	if cfg.IsMetricsEnabled() {
 		mp, metricShutdown, err := initMeterProvider(ctx, cfg, res)
 		if err != nil {
@@ -162,7 +163,7 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		} else {
 			meterProvider = mp
 			shutdownFuncs = append(shutdownFuncs, metricShutdown)
-			otel.SetMeterProvider(meterProvider)
+			metricsStarted = true
 		}
 		meter = meterProvider.Meter(cfg.ServiceName)
 	} else {
@@ -175,10 +176,30 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.IsLogsEnabled() {
 		lp, logShutdown, err := initLogProvider(ctx, cfg, res)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize log provider: %w", err)
+			// Don't leave the trace and meter providers started above running
+			// (their exporters keep goroutines and connections) when the
+			// caller gets no Provider to shut them down with.
+			initErr := fmt.Errorf("failed to initialize log provider: %w", err)
+			for _, shutdown := range shutdownFuncs {
+				if sErr := shutdown(ctx); sErr != nil {
+					initErr = errors.Join(initErr, sErr)
+				}
+			}
+			return nil, initErr
 		}
 		loggerProvider = lp
 		shutdownFuncs = append(shutdownFuncs, logShutdown)
+	}
+
+	// Install the globals only once every enabled signal has started, so a
+	// failed init leaves the global providers as they were.
+	if cfg.IsTracingEnabled() {
+		otel.SetTracerProvider(tracerProvider)
+	}
+	if metricsStarted {
+		otel.SetMeterProvider(meterProvider)
+	}
+	if loggerProvider != nil {
 		global.SetLoggerProvider(loggerProvider)
 	}
 
@@ -380,8 +401,12 @@ func createSampler(cfg Config) (sdktrace.Sampler, error) {
 }
 
 // initLogProvider initializes the log provider with appropriate exporter based on protocol
+// newLogExporter creates the log exporter; a variable so tests can simulate an
+// exporter that can't be created.
+var newLogExporter = createLogExporter
+
 func initLogProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdklog.LoggerProvider, func(context.Context) error, error) {
-	logExporter, err := createLogExporter(ctx, cfg)
+	logExporter, err := newLogExporter(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create log exporter: %w", err)
 	}
