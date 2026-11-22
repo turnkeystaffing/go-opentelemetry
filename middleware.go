@@ -28,7 +28,7 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Create span for the HTTP request. The name is "{method} {path}"
 			// with ID-like segments replaced by {id}; after routing it becomes
 			// "{method} {route}" when a route template is known, or "{method}"
-			// for an unrouted 3xx/4xx response (see below).
+			// for an unrouted 404/405 response (see below).
 			rawMethod := string(ctx.Method())
 			method := normalizeMethod(rawMethod)
 			spanName := method
@@ -109,11 +109,13 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 
 			// Name the span after the route template once routing has run, so
 			// span names and http.route stay low-cardinality.
-			// Unrouted redirects and client errors (404s, auth rejections
-			// before routing, 405, 429) come from arbitrary paths: name them
-			// after the method only, not one span name per path.
+			// An unrouted 404 or 405 means no route matched: scanners and typos
+			// hit arbitrary paths, so name those after the method only, not
+			// one span name per path. Other unrouted statuses (redirects, 400,
+			// 401/403, 429) keep the path-derived name, so a service without
+			// routes still sees which endpoint returns them.
 			if !applyRouteName(ctx, span, method) {
-				if sc := ctx.Response.StatusCode(); sc >= 300 && sc < 500 {
+				if sc := ctx.Response.StatusCode(); sc == fasthttp.StatusNotFound || sc == fasthttp.StatusMethodNotAllowed {
 					span.SetName(method)
 				}
 			}

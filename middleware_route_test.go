@@ -271,20 +271,24 @@ func TestFastHTTPMiddleware_RouteSourcePrecedence(t *testing.T) {
 	}
 }
 
-// AC-14: without a route template, any 3xx or 4xx response (auth middleware
-// rejecting before routing, 405, 429, router redirects) is named after the
-// method only; 2xx and 5xx keep the templated-path fallback.
-func TestFastHTTPMiddleware_UnroutedRedirectOrClientError_SpanNameIsMethod(t *testing.T) {
+// AC-14: without a route template, only 404 and 405 are named after the
+// method only; every other status keeps the AC-2 path-derived name.
+func TestFastHTTPMiddleware_UnroutedNotFoundOrMethodNotAllowed_SpanNameIsMethod(t *testing.T) {
 	tests := []struct {
 		status int
 		want   string
 	}{
-		{fasthttp.StatusMovedPermanently, "GET"},
-		{fasthttp.StatusPermanentRedirect, "GET"},
-		{fasthttp.StatusUnauthorized, "GET"},
-		{fasthttp.StatusForbidden, "GET"},
+		// Only "no such route" answers are named after the method only.
+		{fasthttp.StatusNotFound, "GET"},
 		{fasthttp.StatusMethodNotAllowed, "GET"},
-		{fasthttp.StatusTooManyRequests, "GET"},
+		// Every other unrouted status keeps the AC-2 path-derived name, so a
+		// service without routes still sees which endpoint returns it.
+		{fasthttp.StatusMovedPermanently, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusPermanentRedirect, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusBadRequest, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusUnauthorized, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusForbidden, "GET /wp-admin/x7f9q"},
+		{fasthttp.StatusTooManyRequests, "GET /wp-admin/x7f9q"},
 		{fasthttp.StatusOK, "GET /wp-admin/x7f9q"},
 		{fasthttp.StatusInternalServerError, "GET /wp-admin/x7f9q"},
 	}
