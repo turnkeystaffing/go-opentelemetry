@@ -2,11 +2,10 @@ package opentelemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -23,13 +22,11 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 const (
-	// OpenTelemetry schema URL for resource attributes
-	schemaURL = "https://opentelemetry.io/schemas/1.24.0"
-
 	// Protocol constants for telemetry configuration
 	ProtocolOTLPgRPC = "otlp_grpc"
 	ProtocolOTLPHTTP = "otlp_http"
@@ -123,15 +120,15 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		}, nil
 	}
 
+	// Validate configuration before building anything
+	if err := validateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid OpenTelemetry configuration: %w", err)
+	}
+
 	// Create resource with service information
 	res, err := createResource(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-
-	// Validate configuration
-	if err := validateConfig(cfg); err != nil {
-		return nil, fmt.Errorf("invalid OpenTelemetry configuration: %w", err)
 	}
 
 	var shutdownFuncs []func(context.Context) error
@@ -146,7 +143,6 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		}
 		tracerProvider = tp
 		shutdownFuncs = append(shutdownFuncs, traceShutdown)
-		otel.SetTracerProvider(tracerProvider)
 		tracer = tracerProvider.Tracer(cfg.ServiceName)
 	} else {
 		tracerProvider = sdktrace.NewTracerProvider()
@@ -156,16 +152,18 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	// Initialize metrics provider conditionally
 	var meterProvider *sdkmetric.MeterProvider
 	var meter metric.Meter
+	metricsStarted := false
 	if cfg.IsMetricsEnabled() {
 		mp, metricShutdown, err := initMeterProvider(ctx, cfg, res)
 		if err != nil {
-			// For protocols that don't support metrics, we create a no-op meter provider
+			// Keep startup working without metrics, but report the failure
+			// through the global OTel error handler instead of dropping it.
+			otel.Handle(fmt.Errorf("opentelemetry: metrics disabled: failed to initialize meter provider: %w", err))
 			meterProvider = sdkmetric.NewMeterProvider()
-			metricShutdown = func(context.Context) error { return nil }
 		} else {
 			meterProvider = mp
 			shutdownFuncs = append(shutdownFuncs, metricShutdown)
-			otel.SetMeterProvider(meterProvider)
+			metricsStarted = true
 		}
 		meter = meterProvider.Meter(cfg.ServiceName)
 	} else {
@@ -178,10 +176,30 @@ func InitializeProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.IsLogsEnabled() {
 		lp, logShutdown, err := initLogProvider(ctx, cfg, res)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize log provider: %w", err)
+			// Don't leave the trace and meter providers started above running
+			// (their exporters keep goroutines and connections) when the
+			// caller gets no Provider to shut them down with.
+			initErr := fmt.Errorf("failed to initialize log provider: %w", err)
+			for _, shutdown := range shutdownFuncs {
+				if sErr := shutdown(ctx); sErr != nil {
+					initErr = errors.Join(initErr, sErr)
+				}
+			}
+			return nil, initErr
 		}
 		loggerProvider = lp
 		shutdownFuncs = append(shutdownFuncs, logShutdown)
+	}
+
+	// Install the globals only once every enabled signal has started, so a
+	// failed init leaves the global providers as they were.
+	if cfg.IsTracingEnabled() {
+		otel.SetTracerProvider(tracerProvider)
+	}
+	if metricsStarted {
+		otel.SetMeterProvider(meterProvider)
+	}
+	if loggerProvider != nil {
 		global.SetLoggerProvider(loggerProvider)
 	}
 
@@ -229,7 +247,7 @@ func createResource(cfg Config) (*resource.Resource, error) {
 	}
 
 	return resource.NewWithAttributes(
-		schemaURL,
+		semconv.SchemaURL,
 		attributes...,
 	), nil
 }
@@ -309,7 +327,7 @@ func createTraceExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter
 // initMeterProvider initializes the meter provider with appropriate exporter based on protocol
 func initMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdkmetric.MeterProvider, func(context.Context) error, error) {
 	// Create metric exporter based on protocol configuration (metrics only support OTLP)
-	metricExporter, err := createMetricExporter(ctx, cfg)
+	metricExporter, err := newMetricExporter(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
 	}
@@ -329,6 +347,10 @@ func initMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 
 	return meterProvider, meterProvider.Shutdown, nil
 }
+
+// newMetricExporter creates the metric exporter; a variable so tests can
+// simulate an exporter that can't be created.
+var newMetricExporter = createMetricExporter
 
 // createMetricExporter creates the appropriate metric exporter based on protocol configuration
 func createMetricExporter(ctx context.Context, cfg Config) (sdkmetric.Exporter, error) {
@@ -379,8 +401,12 @@ func createSampler(cfg Config) (sdktrace.Sampler, error) {
 }
 
 // initLogProvider initializes the log provider with appropriate exporter based on protocol
+// newLogExporter creates the log exporter; a variable so tests can simulate an
+// exporter that can't be created.
+var newLogExporter = createLogExporter
+
 func initLogProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdklog.LoggerProvider, func(context.Context) error, error) {
-	logExporter, err := createLogExporter(ctx, cfg)
+	logExporter, err := newLogExporter(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create log exporter: %w", err)
 	}

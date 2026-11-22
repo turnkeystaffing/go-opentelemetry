@@ -2,6 +2,7 @@ package opentelemetry
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 )
 
@@ -31,15 +32,18 @@ func (h *MultiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return false
 }
 
+// Handle forwards the record to every enabled handler, each with its own copy,
+// even when an earlier handler fails. It returns all failures joined.
 func (h *MultiHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs []error
 	for _, handler := range h.handlers {
 		if handler.Enabled(ctx, r.Level) {
-			if err := handler.Handle(ctx, r); err != nil {
-				return err
+			if err := handler.Handle(ctx, r.Clone()); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (h *MultiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
