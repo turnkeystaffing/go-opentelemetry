@@ -302,15 +302,18 @@ func isUUID(s string) bool {
 // Query parameter names are normalized (lower-cased, "-" and "_" removed)
 // before matching, so "accessToken", "access-token" and "ACCESS_TOKEN" match
 // alike. A parameter is sensitive when its normalized name contains one of
-// sensitiveQueryParts or equals one of sensitiveQueryNames.
+// sensitiveQueryParts, ends with sensitiveQuerySuffix ("access_key",
+// "subscription-key"; "monkey" too, an accepted side effect) or equals one of
+// sensitiveQueryNames ("ticket" is exact so "ticket_id" stays readable).
 var (
 	sensitiveQueryParts = []string{
 		"token", "secret", "password", "passwd", "signature", "credential",
-		"apikey", "session", "jwt",
+		"apikey", "session", "jwt", "assertion", "samlresponse",
 	}
-	sensitiveQueryNames = map[string]struct{}{
+	sensitiveQuerySuffix = "key"
+	sensitiveQueryNames  = map[string]struct{}{
 		"key": {}, "sig": {}, "code": {}, "auth": {}, "authorization": {},
-		"pwd": {}, "otp": {}, "awsaccesskeyid": {},
+		"pwd": {}, "otp": {}, "awsaccesskeyid": {}, "ticket": {},
 	}
 	queryKeyNormalizer = strings.NewReplacer("-", "", "_", "")
 )
@@ -319,7 +322,7 @@ var (
 // credential or signature whose value must not be recorded.
 func isSensitiveQueryKey(name string) bool {
 	n := queryKeyNormalizer.Replace(strings.ToLower(name))
-	if _, ok := sensitiveQueryNames[n]; ok {
+	if _, ok := sensitiveQueryNames[n]; ok || strings.HasSuffix(n, sensitiveQuerySuffix) {
 		return true
 	}
 	for _, part := range sensitiveQueryParts {

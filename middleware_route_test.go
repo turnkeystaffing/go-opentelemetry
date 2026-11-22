@@ -237,7 +237,12 @@ func TestFastHTTPMiddleware_URLQueryRedactsSensitiveValues(t *testing.T) {
 		{"remaining listed keys", "refresh_token=a&id_token=b&X-Amz-Credential=c&X-Amz-Security-Token=d&auth=e&authorization=f&passwd=g&secret=h", "refresh_token=REDACTED&id_token=REDACTED&X-Amz-Credential=REDACTED&X-Amz-Security-Token=REDACTED&auth=REDACTED&authorization=REDACTED&passwd=REDACTED&secret=REDACTED"},
 		{"exact short keys", "key=AIza&pwd=p&otp=1&code=c", "key=REDACTED&pwd=REDACTED&otp=REDACTED&code=REDACTED"},
 		{"session and jwt", "sessionId=s&jwt=j", "sessionId=REDACTED&jwt=REDACTED"},
-		{"lookalikes kept", "keyword=go&monkey=1&zipcode=94016&author=me&design=x", "keyword=go&monkey=1&zipcode=94016&author=me&design=x"},
+		{"names ending in key", "access_key=a&private_key=b&subscription-key=c&ClientKey=d", "access_key=REDACTED&private_key=REDACTED&subscription-key=REDACTED&ClientKey=REDACTED"},
+		{"assertion and saml", "client_assertion=a&SAMLResponse=b&jwt_assertion_type=c", "client_assertion=REDACTED&SAMLResponse=REDACTED&jwt_assertion_type=REDACTED"},
+		{"ticket exact only", "ticket=t&ticket_id=42&Ticket=T", "ticket=REDACTED&ticket_id=42&Ticket=REDACTED"},
+		// "monkey" ends in "key", so it is redacted (accepted side effect).
+		{"key suffix side effect", "monkey=1&keyword=go", "monkey=REDACTED&keyword=go"},
+		{"lookalikes kept", "keyword=go&keys=a,b&zipcode=94016&author=me&design=x&tickets=3", "keyword=go&keys=a,b&zipcode=94016&author=me&design=x&tickets=3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
