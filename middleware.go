@@ -114,7 +114,7 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 			// Set span status based on HTTP status code
 			statusCode := ctx.Response.StatusCode()
 			span.SetAttributes(semconv.HTTPResponseStatusCode(statusCode))
-			if size, ok := responseBodySize(&ctx.Response); ok {
+			if size, ok := responseBodySize(ctx); ok {
 				span.SetAttributes(semconv.HTTPResponseBodySize(size))
 			}
 
@@ -144,8 +144,14 @@ func applyRouteName(ctx *fasthttp.RequestCtx, span trace.Span, method string) bo
 // SetBody doesn't update the Content-Length header until the response is
 // written, so a buffered body is measured directly. A streamed body is not
 // read (that would drain it): its declared Content-Length is used, and the
-// size is unknown (ok == false) when the stream is chunked.
-func responseBodySize(resp *fasthttp.Response) (int, bool) {
+// size is unknown (ok == false) when the stream is chunked. Responses that
+// never carry a body (HEAD, 1xx, 204, 304, or SkipBody) report 0, whatever
+// body the handler set.
+func responseBodySize(ctx *fasthttp.RequestCtx) (int, bool) {
+	resp := &ctx.Response
+	if ctx.IsHead() || resp.SkipBody || bodyForbidden(resp.StatusCode()) {
+		return 0, true
+	}
 	if !resp.IsBodyStream() {
 		return len(resp.Body()), true
 	}
@@ -153,6 +159,12 @@ func responseBodySize(resp *fasthttp.Response) (int, bool) {
 		return n, true
 	}
 	return 0, false
+}
+
+// bodyForbidden reports whether a status code never carries a response body
+// (RFC 9110: 1xx, 204 and 304), so fasthttp doesn't send one.
+func bodyForbidden(status int) bool {
+	return status >= 100 && status < 200 || status == fasthttp.StatusNoContent || status == fasthttp.StatusNotModified
 }
 
 // httpRouteKey is the user-value key under which SetHTTPRoute stores the route template.

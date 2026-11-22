@@ -45,6 +45,29 @@ func TestFastHTTPMiddleware_ResponseBodySize(t *testing.T) {
 	if v, ok := spanAttr(chunked, "http.response.body.size"); ok {
 		t.Errorf("chunked stream: body.size must not be set, got %d", v.AsInt64())
 	}
+
+	// No body is sent for HEAD or for 1xx/204/304, whatever the handler set.
+	noBody := []struct {
+		name, method string
+		status       int
+		skipBody     bool
+	}{
+		{"HEAD", "HEAD", fasthttp.StatusOK, false},
+		{"204", "GET", fasthttp.StatusNoContent, false},
+		{"304", "GET", fasthttp.StatusNotModified, false},
+		{"1xx", "GET", fasthttp.StatusEarlyHints, false},
+		{"SkipBody", "GET", fasthttp.StatusOK, true},
+	}
+	for _, tt := range noBody {
+		span := serveThroughMiddleware(t, tt.method, "/x", func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(tt.status)
+			ctx.SetBody([]byte("hello world"))
+			ctx.Response.SkipBody = tt.skipBody
+		})
+		if v, ok := spanAttr(span, "http.response.body.size"); !ok || v.AsInt64() != 0 {
+			t.Errorf("%s: body.size = %d (set=%v), want 0 (no body is sent)", tt.name, v.AsInt64(), ok)
+		}
+	}
 }
 
 // AC-18: when the handler panics, the span still gets the route name, Error
