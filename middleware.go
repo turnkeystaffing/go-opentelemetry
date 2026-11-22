@@ -109,9 +109,11 @@ func FastHTTPMiddleware(serviceName string) func(fasthttp.RequestHandler) fastht
 
 			// Name the span after the route template once routing has run, so
 			// span names and http.route stay low-cardinality.
-			// An unrouted 404 or 405 means no route matched: scanners and typos
-			// hit arbitrary paths, so name those after the method only, not
-			// one span name per path. Other unrouted statuses (redirects, 400,
+			// A 404 or 405 with no route template recorded (usually: no route
+			// matched) comes from arbitrary paths such as scanners and typos,
+			// so name it after the method only, not one span name per path.
+			// This also applies to a handler that answers 404 itself without
+			// SetHTTPRoute. Other statuses without a template (redirects, 400,
 			// 401/403, 429) keep the path-derived name, so a service without
 			// routes still sees which endpoint returns them.
 			if !applyRouteName(ctx, span, method) {

@@ -79,10 +79,11 @@ one, `http.route` is left unset and the span name is a best-effort fallback:
 - ID-like segments (all digits, UUIDs, 16+ hex characters) are replaced with
   `{id}`; other segments (slugs, short tokens) are kept as sent. Provide a
   template for any endpoint with other kinds of path parameters.
-- A 404 or 405 response (no route matched) is named after the method only
-  (`GET`), so unmatched paths such as scanner traffic don't create one span
-  name per path. Other statuses (redirects, 400, 401/403, 429) keep the
-  path-derived name.
+- A 404 or 405 response with no route template recorded is named after the
+  method only (`GET`), so unmatched paths such as scanner traffic don't create
+  one span name per path. This includes a handler that answers 404 itself
+  without calling `SetHTTPRoute`. Other statuses (redirects, 400, 401/403,
+  429) keep the path-derived name.
 
 Methods outside GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE and PATCH
 are recorded as `_OTHER` (span name and `http.request.method`), with the
@@ -203,6 +204,20 @@ rm := oteltest.CollectMetrics(t, reader)
 oteltest.AssertHistogramRecorded(t, rm, "orders.create.duration")
 ```
 
+## Telemetry changes in v0.7.1
+
+Upgrade from v0.6.x straight to v0.7.1. Compared with v0.7.0:
+
+1. **Only unrouted 404/405 responses are named after the method only**
+   (`GET`). Redirects, 400, 401/403 and 429 without a recorded route template
+   are named after the path again (with `{id}` templating), as before v0.7.0.
+   Services that put auth or rate limiting in front of the router see their
+   401/403/429 per path; scanner traffic hitting those can add span names.
+2. **More query parameters are redacted in `url.query`:** names that end in
+   `key` once `-` and `_` are removed (`access_key`, `subscription-key`, and
+   also `monkey` or `sort_key`), names containing `assertion` or
+   `samlresponse`, and `ticket` (exact, so `ticket_id` stays readable).
+
 ## Telemetry changes in v0.7.0
 
 No Go API changes (one addition: `SetHTTPRoute`). Upgrading changes what
@@ -220,9 +235,8 @@ services emit, so check dashboards, alerts and sampling rules that key on:
    (previously the raw request target), and is not set for `OPTIONS *` or
    `CONNECT host:port`. The query moved to `url.query`, with sensitive
    parameter values redacted.
-4. **Unrouted 404/405 responses are named after the method only** (`GET`);
-   other unrouted statuses keep the path-derived name. Non-standard methods
-   are recorded as `_OTHER`.
+4. **Unrouted 3xx/4xx responses are named after the method only** (`GET`),
+   and non-standard methods are recorded as `_OTHER`.
 5. **`http.response.body.size` is the real body size** (it was usually 0, and
    -1 for chunked streams; chunked streams now leave it out). HEAD, 1xx, 204
    and 304 responses report 0, since no body is sent.
