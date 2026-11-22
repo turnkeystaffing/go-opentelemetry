@@ -6,6 +6,7 @@ import (
 
 	"github.com/valyala/fasthttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -30,7 +31,9 @@ func TestFastHTTPMiddleware_ResponseBodySize(t *testing.T) {
 	var sized *fasthttp.RequestCtx
 	stream := serveThroughMiddleware(t, "GET", "/x", func(ctx *fasthttp.RequestCtx) {
 		sized = ctx
-		ctx.SetBodyStream(strings.NewReader("12345"), 5)
+		// Declared length differs from the stream's real length, so the
+		// test tells "declared" from "read": 5 must be recorded, not 7.
+		ctx.SetBodyStream(strings.NewReader("1234567"), 5)
 	})
 	if v, ok := spanAttr(stream, "http.response.body.size"); !ok || v.AsInt64() != 5 {
 		t.Errorf("sized stream: body.size = %d (set=%v), want 5", v.AsInt64(), ok)
@@ -137,4 +140,47 @@ func countExceptionEvents(span sdktrace.ReadOnlySpan) int {
 		}
 	}
 	return n
+}
+
+// AC-18: a panic without a route keeps the path-derived name and gets Error;
+// a status or body the handler set before panicking is not recorded.
+func TestFastHTTPMiddleware_HandlerPanicWithoutRoute(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/users/123")
+	ctx.Request.Header.SetMethod("GET")
+	handler := FastHTTPMiddleware("test-service")(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusOK)
+		ctx.SetBody([]byte("partial"))
+		panic("boom")
+	})
+	func() {
+		defer func() { _ = recover() }()
+		handler(ctx)
+	}()
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 ended span, got %d", len(spans))
+	}
+	span := spans[0]
+	if span.Name() != "GET /users/{id}" {
+		t.Errorf("span name = %q, want %q", span.Name(), "GET /users/{id}")
+	}
+	if _, ok := spanAttr(span, "http.route"); ok {
+		t.Error("http.route must not be set without a route")
+	}
+	if span.Status().Code != codes.Error {
+		t.Errorf("status = %v, want Error", span.Status().Code)
+	}
+	for _, key := range []string{"http.response.status_code", "http.response.body.size"} {
+		if v, ok := spanAttr(span, attribute.Key(key)); ok {
+			t.Errorf("%s must not be set after a panic, got %v", key, v.Emit())
+		}
+	}
 }
