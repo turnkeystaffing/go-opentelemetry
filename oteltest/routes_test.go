@@ -153,3 +153,19 @@ func TestRouteSpanCheck_WrongRouteAndNoRoutes(t *testing.T) {
 		}
 	}
 }
+
+// A handler that panics before the router runs is reported as a panic, not
+// only as a missing http.route, so the cause isn't mistaken for the router.
+func TestRouteSpanCheck_ReportsPanic(t *testing.T) {
+	rec := &recordingTB{TB: t}
+	check := oteltest.NewRouteSpanCheck(rec)
+	handler := opentelemetry.FastHTTPMiddleware("svc")(func(*fasthttp.RequestCtx) {
+		var m map[string]int
+		m["boom"]++ // nil map write: a middleware missing a test dependency
+	})
+	check.Run(map[string][]string{"GET": {"/health"}}, handler)
+	all := strings.Join(rec.errs, "\n")
+	if !strings.Contains(all, "GET /health: the handler panicked: assignment to entry in nil map") {
+		t.Errorf("want the panic reported, got:\n%s", all)
+	}
+}

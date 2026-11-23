@@ -127,7 +127,11 @@ func (c *RouteSpanCheck) checkRoute(method, route string, handler fasthttp.Reque
 		reqMethod = fasthttp.MethodGet
 	}
 	before := len(c.rec.Ended())
-	serve(handler, reqMethod, url)
+	if p := serve(handler, reqMethod, url); p != nil {
+		// Reported first: a panic in a middleware before the router (often a
+		// test dependency left nil) also explains a missing http.route below.
+		c.t.Errorf("%s %s: the handler panicked: %v (request %s %s; if it happened before routing, the route can't be recorded)", method, route, p, reqMethod, url)
+	}
 	span := serverSpan(c.rec.Ended()[before:])
 
 	if o.without[reqMethod+" "+want] {
@@ -152,14 +156,15 @@ func (c *RouteSpanCheck) checkRoute(method, route string, handler fasthttp.Reque
 	}
 }
 
-// serve runs one request; a panicking handler still ends its span, so the
-// panic is swallowed here and the span is checked like any other.
-func serve(handler fasthttp.RequestHandler, method, url string) {
-	defer func() { _ = recover() }()
+// serve runs one request and returns the panic value, if any. A panicking
+// handler still ends its span, so the span is checked like any other.
+func serve(handler fasthttp.RequestHandler, method, url string) (panicked any) {
+	defer func() { panicked = recover() }()
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(method)
 	ctx.Request.SetRequestURI(url)
 	handler(ctx)
+	return nil
 }
 
 func serverSpan(spans []sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
