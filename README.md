@@ -71,7 +71,14 @@ func handle(ctx *fasthttp.RequestCtx) {
 **Span names should use the route template.** Provide it in one of two ways:
 
 - `github.com/fasthttp/router` with `r.SaveMatchedRoutePath = true` — picked up automatically.
-- Any router: call `opentelemetry.SetHTTPRoute(ctx, "/users/{id}")` in the handler.
+  Without that setting the router doesn't record the route and spans use the fallback below.
+- Any other router, including a custom one: call `opentelemetry.SetHTTPRoute(ctx, route)`
+  in the router adapter or handler, before the handler returns.
+
+Router syntax inside a parameter is dropped: `{id:[0-9a-f]{8}-…}`, `{id:\d+}`, `{page?}`
+and `{filepath:*}` are recorded as `{id}`, `{page}` and `{filepath}`, whichever
+source the route comes from. Routes without braces (`/health`, `/users/:id`) are
+kept as they are, and a route whose braces don't balance is kept as written.
 
 With a template the span is `GET /users/{id}` and `http.route` is set. Without
 one, `http.route` is left unset and the span name is a best-effort fallback:
@@ -204,9 +211,20 @@ rm := oteltest.CollectMetrics(t, reader)
 oteltest.AssertHistogramRecorded(t, rm, "orders.create.duration")
 ```
 
+## Telemetry changes in v0.7.2
+
+Upgrade from v0.6.x straight to v0.7.2. Compared with v0.7.1:
+
+1. **Route parameters are recorded by name only** in the span name and
+   `http.route`: `POST /checks/{id:[0-9a-f]{8}-…}/reports` becomes
+   `POST /checks/{id}/reports`. This affects services whose routes use regex
+   constraints, optional (`{page?}`) or catch-all (`{filepath:*}`) parameters.
+2. A route set with `SetHTTPRoute` is held to the same rules as paths: invalid
+   UTF-8 becomes `�` and it is cut to 1024 characters.
+
 ## Telemetry changes in v0.7.1
 
-Upgrade from v0.6.x straight to v0.7.1. Compared with v0.7.0:
+Compared with v0.7.0:
 
 1. **Only unrouted 404/405 responses are named after the method only**
    (`GET`). Redirects, 400, 401/403 and 429 without a recorded route template
