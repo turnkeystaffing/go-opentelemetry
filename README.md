@@ -211,6 +211,31 @@ rm := oteltest.CollectMetrics(t, reader)
 oteltest.AssertHistogramRecorded(t, rm, "orders.create.duration")
 ```
 
+### Checking every route's span
+
+`RouteSpanCheck` sends one in-memory request per registered route through the
+service's real handler chain and reports any route whose server span is
+missing, has no or the wrong `http.route`, or isn't named after the route.
+Create it **before** building the handler (the middleware takes its tracer
+when it is built):
+
+```go
+func TestRoutes_SpansNamedAfterRoute(t *testing.T) {
+	check := oteltest.NewRouteSpanCheck(t)
+	r := gateway.NewRouter(deps)              // *router.Router (github.com/fasthttp/router)
+	check.Run(r.List(), gateway.NewHandler(deps, r),
+		oteltest.WithoutSpan("GET", "/r/{token}"), // a route that is deliberately untraced
+		oteltest.WithParam("provider", "github"),  // a value for a constraint it can't fill
+	)
+}
+```
+
+Parameter values are filled from the route (`{id}` → `x`, a UUID regex → a
+UUID, `\d+` → `1`, `{path:*}` → `a/b`); one it can't fill is reported, never
+skipped. A `:name` or `*name` segment is reported too: fasthttp/router treats
+it as literal text, so the route never matches a real value (use `{name}`, or
+`AllowLiteralSegment` if the text is meant).
+
 ## Telemetry changes in v0.7.2
 
 Upgrade from v0.6.x straight to v0.7.2. Compared with v0.7.1:
